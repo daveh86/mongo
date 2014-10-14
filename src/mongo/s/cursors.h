@@ -81,6 +81,9 @@ namespace mongo {
 
         std::string getNS() { return _cursor->getNS(); }
 
+        //Return a BSON representation of the cursor, including the ParallelSortClusteredCursor
+        BSONObj toBSON();
+
         // The default initial buffer size for sending responses.
         static const int INIT_REPLY_BUFFER_SIZE;
 
@@ -97,6 +100,14 @@ namespace mongo {
         long long _id;
         long long _lastAccessMillis; // 0 means no timeout
 
+        // The host & port string for this user
+        string _creatingHostPort;
+
+        // The thread name of the creating connection
+        string _creatingThreadName;
+
+        // The user that created this cursor
+        BSONArray _creatingUserNames;
     };
 
     typedef boost::shared_ptr<ShardedClientCursor> ShardedClientCursorPtr;
@@ -135,6 +146,11 @@ namespace mongo {
 
         void doTimeouts();
         void startTimeoutThread();
+
+        // Find all cursors for a given namespace, have them enumerated and add to "data"
+        // Returns the number of cursors found and added
+        uint64_t enumerateCursors(BSONArrayBuilder& data, string ns );
+        
     private:
         mutable mongo::mutex _mutex;
 

@@ -61,7 +61,8 @@ namespace mongo {
         /**
          * This ClientCursor constructor creates a cursorid that can be getMore'd
          */
-        ClientCursor(const Collection* collection,
+        ClientCursor(OperationContext* txn,
+                     const Collection* collection,
                      PlanExecutor* exec,
                      int qopts = 0,
                      const BSONObj query = BSONObj());
@@ -119,6 +120,9 @@ namespace mongo {
         //
 
         void updateSlaveLocation(OperationContext* txn, CurOp& curop);
+
+        BSONObj toBson();
+
         void slaveReadTill( const OpTime& t ) { _slaveReadTill = t; }
         /** Just for testing. */
         OpTime getSlaveReadTill() const { return _slaveReadTill; }
@@ -258,6 +262,16 @@ namespace mongo {
         // The underlying execution machinery.
         //
         scoped_ptr<PlanExecutor> _exec;
+
+        // The user that created this cursor
+        BSONArray _creatingUserNames;
+
+        // The host & port string for this user
+        string _creatingHostPort;
+
+        // The thread name of the creating connection
+        string _creatingThreadName;
+
     };
 
     /**

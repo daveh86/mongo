@@ -137,7 +137,7 @@ namespace mongo {
                 for (size_t i = 0; i < execs.size(); i++) {
                     // transfer ownership of an executor to the ClientCursor (which manages its own
                     // lifetime).
-                    ClientCursor* cc = new ClientCursor( collection, execs.releaseAt(i) );
+                    ClientCursor* cc = new ClientCursor(txn, collection, execs.releaseAt(i) );
 
                     // we are mimicking the aggregation cursor output here
                     // that is why there are ns, ok and empty firstBatch

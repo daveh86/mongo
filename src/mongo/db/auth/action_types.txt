@@ -66,6 +66,7 @@
 "killCursors",
 "killop",
 "listCollections",
+"listCursors",
 "listDatabases",
 "listIndexes",
 "listShards",

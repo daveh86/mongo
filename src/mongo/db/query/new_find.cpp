@@ -822,7 +822,7 @@ namespace mongo {
 
             // Allocate a new ClientCursor.  We don't have to worry about leaking it as it's
             // inserted into a global map by its ctor.
-            ClientCursor* cc = new ClientCursor(collection, exec.get(),
+            ClientCursor* cc = new ClientCursor(txn, collection, exec.get(),
                                                 pq.getOptions().toInt(),
                                                 pq.getFilter());
             ccId = cc->cursorid();

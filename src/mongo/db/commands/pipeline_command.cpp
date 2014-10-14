@@ -277,7 +277,7 @@ namespace mongo {
 
                 if (collection) {
                     // XXX
-                    ClientCursor* cursor = new ClientCursor(collection, execHolder.release());
+                    ClientCursor* cursor = new ClientCursor(txn, collection, execHolder.release());
                     cursor->isAggCursor = true; // enable special locking behavior
                     pin.reset(new ClientCursorPin(collection, cursor->cursorid()));
                     // Don't add any code between here and the start of the try block.

@@ -48,6 +48,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/util/concurrency/thread_name.h"
 
 namespace mongo {
 
@@ -69,8 +70,8 @@ namespace mongo {
         return cursorStatsOpen.get();
     }
 
-    ClientCursor::ClientCursor(const Collection* collection, PlanExecutor* exec,
-                               int qopts, const BSONObj query)
+    ClientCursor::ClientCursor(OperationContext* txn, const Collection* collection, PlanExecutor* exec,
+                               int qopts, const BSONObj query )
         : _collection( collection ),
           _countedYet( false ),
           _unownedRU(NULL) {
@@ -82,6 +83,16 @@ namespace mongo {
         if ( exec->collection() ) {
             invariant( collection == exec->collection() );
         }
+        _creatingHostPort = txn->getCurOp()->getRemoteString();
+        _creatingThreadName = getThreadName();
+        BSONArrayBuilder bab;
+        for ( UserNameIterator nameIter =
+                txn->getClient()->getAuthorizationSession()->getAuthenticatedUserNames();
+              nameIter.more();
+              nameIter.next()) {
+                bab.append(nameIter->getFullName());
+        }
+        _creatingUserNames = bab.arr();
         init();
     }
 
@@ -176,6 +187,24 @@ namespace mongo {
             return;
 
         repl::getGlobalReplicationCoordinator()->setLastOptimeForSlave(txn, rid, _slaveReadTill);
+    }
+
+    // Generates a BSON representation of the cursors details
+    // Used as part of the list cursors command
+    BSONObj ClientCursor::toBson() {
+        BSONObjBuilder representation;
+
+        representation.append("cursorid", _cursorid);
+        representation.append("client", _creatingHostPort);
+        representation.append("threadName", _creatingThreadName);
+        representation.append("userNames", _creatingUserNames);
+        representation.append("ns", _ns);
+        representation.append("query", _query);
+        representation.append("position", _pos);
+        representation.append("options", _queryOptions);
+        representation.append("idleTimeMs", _idleAgeMillis);
+
+        return representation.obj();
     }
 
     //

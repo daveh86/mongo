@@ -107,6 +107,8 @@ namespace mongo {
 
         std::size_t timeoutCursors(OperationContext* txn, int millisSinceLastCall);
 
+        bool listCursors(OperationContext* txn, BSONObjBuilder& result, string& errmsg, string ns );
+
         int64_t nextSeed();
 
     private:
@@ -233,6 +235,43 @@ namespace mongo {
         }
 
         return totalTimedOut;
+    }
+
+    bool GlobalCursorIdCache::listCursors(OperationContext* txn,
+                                          BSONObjBuilder& result,
+                                          string& errmsg,
+                                          string ns ) {
+
+        Lock::DBRead lock(txn->lockState(), ns);
+        Database* db = dbHolder().get(txn, ns);
+        if ( !db ) {
+            errmsg = str::stream() << "unable to find database matching namespace:" << ns;
+            return false;
+        }
+        Client::Context context(txn,  ns, db );
+        Collection* collection = db->getCollection( txn, ns );
+        if ( collection == NULL ) {
+            errmsg = str::stream() << "unable to find collection matching namespace:" << ns;
+            return false;
+        }
+
+        BSONArrayBuilder data;
+        uint64_t numObj;
+
+        numObj = collection->cursorCache()->enumerateCursors( data );
+        if( numObj > 0 ) {
+            result.append("cursors", data.arr() );
+        } else {
+            result.append("cursors", "no open cursors");
+        }
+        return true;
+    }
+
+    bool CollectionCursorCache::listCursors(OperationContext* txn, 
+                                            BSONObjBuilder& result, 
+                                            string& errmsg,
+                                            string ns ) {
+        return _globalCursorIdCache.listCursors(txn, result, errmsg, ns);
     }
 
     // ---
@@ -393,6 +432,18 @@ namespace mongo {
         }
 
         return toDelete.size();
+    }
+
+    uint64_t CollectionCursorCache::enumerateCursors(BSONArrayBuilder& result) {
+        SimpleMutex::scoped_lock lk( _mutex );
+        uint64_t counter = 0;
+
+        for ( CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
+            ClientCursor* cc = i->second;
+            result.append( cc->toBson() );
+            counter++;
+        }
+        return counter;
     }
 
     void CollectionCursorCache::registerExecutor( PlanExecutor* exec ) {

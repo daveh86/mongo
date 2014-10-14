@@ -449,7 +449,8 @@ namespace mongo {
     }
 
     BSONObj ParallelConnectionMetadata::toBSON() const {
-        return BSON( "state" << ( pcState ? pcState->toBSON() : BSONObj() ) <<
+        return BSON( "clientsCursorID" << ( pcState ? pcState->cursor->getCursorId() : 0 ) <<
+                     "state" << ( pcState ? pcState->toBSON() : BSONObj() ) <<
                      "retryNext" << retryNext <<
                      "init" << initialized <<
                      "finish" << finished <<

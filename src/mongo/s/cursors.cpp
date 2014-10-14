@@ -48,6 +48,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/max_time.h"
 #include "mongo/util/concurrency/task.h"
+#include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/listen.h"
 
@@ -75,6 +76,20 @@ namespace mongo {
         }
         else
             _lastAccessMillis = Listener::getElapsedTimeMillis();
+
+        ClientBasic* client = ClientBasic::getCurrent();
+        AuthorizationSession* authSession = client->getAuthorizationSession();
+
+        _creatingHostPort = client->getRemote().toString();
+
+        _creatingThreadName = getThreadName();
+
+        BSONArrayBuilder bab;
+        for ( UserNameIterator nameIter = authSession->getAuthenticatedUserNames();
+              nameIter.more(); nameIter.next()) {
+                bab.append(nameIter->getFullName());
+        }
+        _creatingUserNames = bab.arr();
     }
 
     ShardedClientCursor::~ShardedClientCursor() {
@@ -89,6 +104,17 @@ namespace mongo {
             verify( _id >= 0 );
         }
         return _id;
+    }
+
+    BSONObj ShardedClientCursor::toBSON(){
+        BSONObjBuilder bob;
+        bob.append("client", _creatingHostPort);
+        bob.append("threadName", _creatingThreadName);
+        bob.append("userNames", _creatingUserNames);
+        bob.append("totalDataSent", _totalSent);
+        bob.append("lastAccessMillis", _lastAccessMillis);
+        bob.append("cursorData", _cursor->toBSON());
+        return bob.obj();
     }
 
     int ShardedClientCursor::getTotalSent() const {
@@ -331,6 +357,31 @@ namespace mongo {
 
             return x;
         }
+    }
+
+    uint64_t CursorCache::enumerateCursors(BSONArrayBuilder& data, string ns ) {
+
+        uint64_t counter = 0;
+
+        for ( MapSharded::iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
+            scoped_lock lk( _mutex );
+
+            if ( i->second->getNS() == ns) {
+                BSONObjBuilder representation;
+                MapNormal::iterator refsIt = _refs.find(i->first);
+
+                representation.append("cursorid", i->first);
+                if (refsIt != _refs.end()){
+                    representation.append("server", refsIt->second);
+                    representation.append("passthrough", true);
+                }
+                representation.appendElements( i->second->toBSON() );
+                counter++;
+                data.append(representation.obj());
+            }
+
+        }
+        return counter;
     }
 
     void CursorCache::gotKillCursors(Message& m ) {

@@ -162,6 +162,7 @@ namespace {
             << ActionType::indexStats
             << ActionType::enableProfiler
             << ActionType::listCollections
+            << ActionType::listCursors
             << ActionType::listIndexes
             << ActionType::planCacheIndexFilter
             << ActionType::planCacheRead
@@ -217,6 +218,7 @@ namespace {
         // hostManager role actions that target the database resource
         hostManagerRoleDatabaseActions
             << ActionType::killCursors
+            << ActionType::listCursors
             << ActionType::repairDatabase;
 
 

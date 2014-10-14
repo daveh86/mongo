@@ -76,6 +76,8 @@ namespace mongo {
          */
         std::size_t timeoutCursors( int millisSinceLastCall );
 
+        uint64_t enumerateCursors(BSONArrayBuilder& data);
+
         // -----------------
 
         /**
@@ -110,6 +112,9 @@ namespace mongo {
         void unpin( ClientCursor* cursor );
 
         // ----------------------
+
+        static bool listCursors(OperationContext* txn, BSONObjBuilder& result, string& errmsg, 
+            string ns);
 
         static int eraseCursorGlobalIfAuthorized(OperationContext* txn, int n, 
             const char* ids);
