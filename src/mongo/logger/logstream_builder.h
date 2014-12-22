@@ -147,7 +147,7 @@ namespace logger {
          */
         void operator<<(Tee* tee);
 
-    private:
+    protected:
         LogstreamBuilder& operator=(const LogstreamBuilder& other);
 
         void makeStream();
@@ -160,6 +160,57 @@ namespace logger {
         std::ostringstream* _os;
         Tee* _tee;
 
+    };
+
+    /**
+     * Fatal version of the logstream builder
+     */
+    class MONGO_CLIENT_API FatalLogstreamBuilder : public LogstreamBuilder {
+    public:
+        static LogSeverity severityCast(int ll) { return LogSeverity::cast(ll); }
+        static LogSeverity severityCast(LogSeverity ls) { return ls; }
+        static LabeledLevel severityCast(const LabeledLevel &labeled) { return labeled; }
+
+        /**
+         * Construct a FatalLogstreamBuilder that writes to "domain" on destruction.
+         *
+         * "contextName" is a short name of the thread or other context.
+         */
+        FatalLogstreamBuilder(MessageLogDomain* domain,
+                         const int msgid,
+                         const bool test,
+                         const std::string& contextName);
+
+        /**
+         * Construct a FatalLogstreamBuilder that writes to "domain" on destruction.
+         *
+         * "contextName" is a short name of the thread or other context.
+         * "component" is the primary log component of the message.
+         */
+        FatalLogstreamBuilder(MessageLogDomain* domain,
+                         const int msgid,
+                         const bool test,
+                         const std::string& contextName,
+                         LogComponent component);
+
+        /**
+         * Copies a FatalLogstreamBuilder.  FatalLogstreamBuilder instances are copyable only until the first
+         * call to stream() or operator<<.
+         *
+         * TODO(schwerin): After C++11 transition, replace with a move-constructor, and make
+         * FatalLogstreamBuilder movable.
+         */
+        FatalLogstreamBuilder(const FatalLogstreamBuilder& other);
+
+        /**
+         * Destroys a FatalLogstreamBuilder().  If anything was written to it via stream() or operator<<,
+         * constructs a MessageLogDomain::Event and appends it to the associated domain.
+         */
+        ~FatalLogstreamBuilder();
+
+    private:
+        int _msgid;
+        bool _test;
     };
 
 

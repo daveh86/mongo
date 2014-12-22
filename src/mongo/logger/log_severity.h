@@ -47,6 +47,7 @@ namespace logger {
         // Static factory methods for getting LogSeverity objects of the various severity levels.
         //
 
+        static inline LogSeverity Fatal();
         static inline LogSeverity Severe();
         static inline LogSeverity Error();
         static inline LogSeverity Warning();

@@ -187,6 +187,11 @@ namespace mongo {
         quickExit(EXIT_ABRUPT);
     }
 
+    MONGO_CLIENT_API logger::FatalLogstreamBuilder fassert(int msgid, bool testOK) {
+        logger::FatalLogstreamBuilder fassert = fatal(msgid, testOK);
+        return fassert;
+    }
+
     void uasserted(int msgid , const string &msg) {
         uasserted(msgid, msg.c_str());
     }

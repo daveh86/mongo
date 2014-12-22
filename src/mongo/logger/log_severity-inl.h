@@ -30,6 +30,7 @@
 namespace mongo {
 namespace logger {
 
+    LogSeverity LogSeverity::Fatal() { return LogSeverity(-5); }
     LogSeverity LogSeverity::Severe() { return LogSeverity(-4); }
     LogSeverity LogSeverity::Error() { return LogSeverity(-3); }
     LogSeverity LogSeverity::Warning() { return LogSeverity(-2); }

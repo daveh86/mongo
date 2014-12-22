@@ -211,9 +211,7 @@ namespace mongo {
     MONGO_CLIENT_API std::string causedBy( const Status& e );
 
     /** aborts on condition failure */
-    MONGO_CLIENT_API inline void fassert(int msgid, bool testOK) {
-        if (MONGO_unlikely(!testOK)) fassertFailed(msgid);
-    }
+    MONGO_CLIENT_API logger::FatalLogstreamBuilder fassert(int msgid, bool testOK = false);
 
     MONGO_CLIENT_API inline void fassert(int msgid, const Status& status) {
         if (MONGO_unlikely(!status.isOK())) {

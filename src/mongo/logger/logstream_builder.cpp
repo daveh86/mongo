@@ -36,6 +36,7 @@
 #include "mongo/logger/tee.h"
 #include "mongo/util/assert_util.h"  // TODO: remove apple dep for this in threadlocal.h
 #include "mongo/util/concurrency/threadlocal.h"
+#include "mongo/util/quick_exit.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -154,6 +155,77 @@ namespace logger {
             }
             else {
                 _os = new std::ostringstream;
+            }
+        }
+    }
+
+    FatalLogstreamBuilder::FatalLogstreamBuilder(MessageLogDomain* domain,
+                                       const int msgid,
+                                       const bool test,
+                                       const std::string& contextName)
+        : LogstreamBuilder(domain,
+          contextName,
+          LogSeverity::Fatal()),
+          _msgid(msgid),
+          _test(test) {
+    }
+
+    FatalLogstreamBuilder::FatalLogstreamBuilder(MessageLogDomain* domain,
+                                       const int msgid,
+                                       const bool test,
+                                       const std::string& contextName,
+                                       LogComponent component)
+        : LogstreamBuilder(domain,
+          contextName,
+          LogSeverity::Fatal(),
+          component),
+          _msgid(msgid),
+          _test(test) {
+    }
+
+    FatalLogstreamBuilder::FatalLogstreamBuilder(const FatalLogstreamBuilder& other)
+        : LogstreamBuilder(other._domain,
+          other._contextName,
+          LogSeverity::Fatal(),
+          other._component),
+          _msgid(other._msgid),
+          _test(other._test) {
+
+        if (other._os || other._tee)
+            abort();
+    }
+
+
+    FatalLogstreamBuilder::~FatalLogstreamBuilder() {
+        if (_os) {
+            if ( MONGO_unlikely(!_test) ) {
+                if ( !_baseMessage.empty() ) {
+                    _baseMessage.push_back(' ');
+
+                }
+                if ( _msgid != 0 ){
+                    std::stringstream assertionMsg;
+                    assertionMsg << "Fatal Assertion " << _msgid << " ";
+                    _baseMessage.insert(0, assertionMsg.str());
+                }
+                _baseMessage += _os->str();
+                MessageEventEphemeral message(curTimeMillis64(), _severity, _component, _contextName,
+                                              _baseMessage);
+                _domain->append(message);
+                if (_tee) {
+                    _os->str("");
+                    logger::MessageEventDetailsEncoder teeEncoder;
+                    teeEncoder.encode(message, *_os);
+                    _tee->write(_os->str());
+                }
+                _os->str("");
+                if (isThreadOstreamCacheInitialized && threadOstreamCache.getMake()->vector().empty()) {
+                    threadOstreamCache.get()->mutableVector().push_back(_os);
+                }
+                else {
+                    delete _os;
+                }
+                quickExit(EXIT_ABRUPT);
             }
         }
     }

@@ -72,8 +72,28 @@ namespace logger {
 namespace {
 
     using logger::LogstreamBuilder;
+    using logger::FatalLogstreamBuilder;
     using logger::LabeledLevel;
     using logger::Tee;
+
+    /**
+     * Returns a FatalLogstreamBuilder for logging a message with LogSeverity::fatal().
+     */
+    inline FatalLogstreamBuilder fatal( int msgid = 0, bool test = false ) {
+        return FatalLogstreamBuilder(logger::globalLogDomain(),
+                                msgid,
+                                test,
+                                getThreadName(),
+                                ::MongoLogDefaultComponent_component);
+    }
+
+    inline FatalLogstreamBuilder fatal(logger::LogComponent component, int msgid = 0, bool test = false) {
+        return FatalLogstreamBuilder(logger::globalLogDomain(),
+                                msgid,
+                                test,
+                                getThreadName(),
+                                component);
+    }
 
     /**
      * Returns a LogstreamBuilder for logging a message with LogSeverity::Severe().

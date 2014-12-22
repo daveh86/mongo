@@ -36,6 +36,7 @@ namespace logger {
 
 namespace {
     const char unknownSeverityString[] = "UNKNOWN";
+    const char fatalSeverityString[] = "FATAL";
     const char severeSeverityString[] = "SEVERE";
     const char errorSeverityString[] = "ERROR";
     const char warningSeverityString[] = "warning";
@@ -46,6 +47,8 @@ namespace {
     StringData LogSeverity::toStringData() const {
         if (_severity > 0)
             return StringData(debugSeverityString, StringData::LiteralTag());
+        if (*this == LogSeverity::Fatal())
+            return StringData(fatalSeverityString, StringData::LiteralTag());
         if (*this == LogSeverity::Severe())
             return StringData(severeSeverityString, StringData::LiteralTag());
         if (*this == LogSeverity::Error())
@@ -64,6 +67,8 @@ namespace {
             return 'D';
         // 'S' might be confused with "Success"
         // Return 'F' to imply Fatal instead.
+        if (*this == LogSeverity::Fatal())
+            return '!';
         if (*this == LogSeverity::Severe())
             return 'F';
         if (*this == LogSeverity::Error())
