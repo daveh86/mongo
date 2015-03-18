@@ -1072,6 +1072,8 @@ if get_option('wiredtiger') == 'on':
         Exit(1)
     else:
         wiredtiger = True
+        env.Append( LIBS=["lz4"] )
+        env.Append( LIBS=["bz2"] )
 
 if env['TARGET_ARCH'] == 'i386':
     # If we are using GCC or clang to target 32 bit, set the ISA minimum to 'nocona',
@@ -1795,6 +1797,9 @@ def doConfigure(myenv):
 
     if use_system_version_of_library("snappy"):
         conf.FindSysLibDep("snappy", ["snappy"])
+
+    conf.FindSysLibDep("bz2", ["bz2"])
+    conf.FindSysLibDep("lz4", ["lz4"])
 
     if use_system_version_of_library("zlib"):
         conf.FindSysLibDep("zlib", ["zlib" if windows else "z"])

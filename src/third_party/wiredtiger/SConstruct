@@ -97,6 +97,18 @@ if not conf.CheckCHeader('stdlib.h'):
     print 'stdlib.h must be installed!'
     Exit(1)
 
+if conf.CheckCHeader('bzlib.h'):
+    wtlibs.append("bz2")
+else:
+    print 'bzlib.h must be installed!'
+    Exit(1)
+
+if conf.CheckCHeader('lz4.h'):
+    wtlibs.append("lz4")
+else:
+    print 'lz4.h must be installed!'
+    Exit(1)
+
 if useZlib:
     conf.env.Append(CPPPATH=[useZlib + "/include"])
     conf.env.Append(LIBPATH=[useZlib + "/lib"])

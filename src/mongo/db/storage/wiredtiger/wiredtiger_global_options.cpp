@@ -61,8 +61,8 @@ namespace mongo {
         wiredTigerOptions.addOptionChaining("storage.wiredTiger.engineConfig.journalCompressor",
                                             "wiredTigerJournalCompressor",
                                             moe::String,
-                                            "use a compressor for log records [none|snappy|zlib]")
-            .format("(:?none)|(:?snappy)|(:?zlib)", "(none/snappy/zlib)")
+                                            "use a compressor for log records [none|snappy|zlib|lz4|bzip2]")
+            .format("(:?none)|(:?snappy)|(:?zlib)|(:?lz4)|(:?bzip2)", "(none/snappy/zlib/lz4/bzip2)")
             .setDefault(moe::Value(std::string("snappy")));
         wiredTigerOptions.addOptionChaining("storage.wiredTiger.engineConfig.directoryForIndexes",
                                             "wiredTigerDirectoryForIndexes",
@@ -80,8 +80,8 @@ namespace mongo {
                                             "wiredTigerCollectionBlockCompressor",
                                             moe::String,
                                             "block compression algorithm for collection data "
-                                            "[none|snappy|zlib]")
-            .format("(:?none)|(:?snappy)|(:?zlib)", "(none/snappy/zlib)")
+                                            "[none|snappy|zlib|lz4|bzip2]")
+            .format("(:?none)|(:?snappy)|(:?zlib)|(:?lz4)|(:?bzip2)", "(none/snappy/zlib/lz4/bzip2)")
             .setDefault(moe::Value(std::string("snappy")));
         wiredTigerOptions.addOptionChaining("storage.wiredTiger.collectionConfig.configString",
                                             "wiredTigerCollectionConfigString",

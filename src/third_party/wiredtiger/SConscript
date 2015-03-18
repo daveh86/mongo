@@ -38,6 +38,8 @@ else:
 
 useZlib = True
 useSnappy = True
+useLZ4 = True
+useBZ2 = True
 
 version_file = 'build_posix/aclocal/version-set.m4'
 
@@ -105,6 +107,14 @@ if useZlib:
 if useSnappy:
     env.Append(CPPDEFINES=['HAVE_BUILTIN_EXTENSION_SNAPPY'])
     wtsources.append("ext/compressors/snappy/snappy_compress.c")
+
+if useBZ2:
+    env.Append(CPPDEFINES=['HAVE_BUILTIN_EXTENSION_BZ2'])
+    wtsources.append("ext/compressors/bzip2/bzip2_compress.c")
+
+if useLZ4:
+    env.Append(CPPDEFINES=['HAVE_BUILTIN_EXTENSION_LZ4'])
+    wtsources.append("ext/compressors/lz4/lz4_compress.c")
 
 wtlib = env.Library(
     target="wiredtiger",
