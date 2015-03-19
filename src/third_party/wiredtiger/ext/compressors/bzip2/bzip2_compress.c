@@ -406,3 +406,15 @@ wiredtiger_extension_init(WT_CONNECTION *connection, WT_CONFIG_ARG *config)
 		return (ret);
 	return (0);
 }
+
+#ifdef HAVE_BUILTIN_EXTENSION_BZIP2_MONGODB
+/*
+ * wiredtiger_extension_init --
+ *	WiredTiger Bzip2 compression extension, only used in MongoDB compilation.
+ */
+int
+bzip_extension_init(WT_CONNECTION *connection, WT_CONFIG_ARG *config)
+{
+	return wiredtiger_extension_init(connection, config);
+}
+#endif

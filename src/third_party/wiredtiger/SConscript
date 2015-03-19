@@ -109,7 +109,7 @@ if useSnappy:
     wtsources.append("ext/compressors/snappy/snappy_compress.c")
 
 if useBZ2:
-    env.Append(CPPDEFINES=['HAVE_BUILTIN_EXTENSION_BZ2'])
+    env.Append(CPPDEFINES=['HAVE_BUILTIN_EXTENSION_BZIP2_MONGODB'])
     wtsources.append("ext/compressors/bzip2/bzip2_compress.c")
 
 if useLZ4:
