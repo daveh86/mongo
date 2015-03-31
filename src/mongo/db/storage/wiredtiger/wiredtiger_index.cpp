@@ -252,18 +252,7 @@ namespace {
                                        BSONObjBuilder* output) const {
         {
             std::vector<std::string> errors;
-            int err = WiredTigerUtil::verifyTable(txn, _uri, output ? &errors : NULL);
-            if (err == EBUSY) {
-                const char* msg = "verify() returned EBUSY. Not treating as invalid.";
-                warning() << msg;
-                if (output) {
-                    if (!errors.empty()) {
-                        *output << "errors" << errors;
-                    }
-                    *output << "warning" << msg;
-                }
-            }
-            else if (err) {
+            if ( int err = WiredTigerUtil::verifyTable(txn, _uri, output ? &errors : NULL) ) {
                 std::string msg = str::stream()
                     << "verify() returned " << wiredtiger_strerror(err) << ". "
                     << "This indicates structural damage. "
@@ -366,6 +355,18 @@ namespace {
             return true;
         invariantWTOK(ret);
         return false;
+    }
+
+    long long WiredTigerIndex::numEntries( OperationContext* txn ) const {
+        boost::scoped_ptr<SortedDataInterface::Cursor> cursor(newCursor(txn, 1));
+        cursor->locate( minKey, RecordId::min() );
+        long long count = 0;
+
+        while ( !cursor->isEOF() ) {
+            cursor->advance();
+            count++;
+        }
+        return count;
     }
 
     long long WiredTigerIndex::getSpaceUsedBytes( OperationContext* txn ) const {

@@ -185,6 +185,12 @@ namespace mongo {
                                             StringData ident ) {
         WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx);
         session->closeAllCursors();
+
+        //Try and close as much as possible to avoid an EBUSY
+        WiredTigerSessionCache* sessionCache =
+            WiredTigerRecoveryUnit::get(opCtx)->getSessionCache();
+        sessionCache->closeAll();
+
         string uri = _uri(ident);
         return _salvageIfNeeded(uri.c_str());
     }
@@ -194,17 +200,8 @@ namespace mongo {
         WiredTigerSession sessionWrapper(_conn);
         WT_SESSION* session = sessionWrapper.getSession();
 
-        int rc = (session->verify)(session, uri, NULL);
-        if (rc == 0) {
+        if ((session->verify)(session, uri, NULL) == 0) {
             log() << "Verify succeeded on uri " << uri << ". Not salvaging.";
-            return Status::OK();
-        }
-
-        if (rc == EBUSY) {
-            // SERVER-16457: verify and salvage are occasionally failing with EBUSY. For now we
-            // lie and return OK to avoid breaking tests. This block should go away when that ticket
-            // is resolved.
-            error() << "Verify on " << uri << " failed with EBUSY. Assuming no salvage is needed.";
             return Status::OK();
         }
 

@@ -746,13 +746,7 @@ namespace {
                                             BSONObjBuilder* output ) {
 
         {
-            int err = WiredTigerUtil::verifyTable(txn, _uri, &results->errors);
-            if (err == EBUSY) {
-                const char* msg = "verify() returned EBUSY. Not treating as invalid.";
-                warning() << msg;
-                results->errors.push_back(msg);
-            }
-            else if (err) {
+            if ( int err = WiredTigerUtil::verifyTable(txn, _uri, &results->errors) ) {
                 std::string msg = str::stream()
                     << "verify() returned " << wiredtiger_strerror(err) << ". "
                     << "This indicates structural damage. "

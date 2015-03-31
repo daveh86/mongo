@@ -1205,17 +1205,32 @@ namespace repl {
         return sleepAdvice;
     }
 
-    static void replMain(OperationContext* txn) {
+    static void replMain() {
         ReplSource::SourceVector sources;
+        int s = 0;
+
         while ( 1 ) {
-            int s = 0;
+
+            if ( s ) {
+                stringstream ss;
+                ss << "sleep " << s << " sec before next pass";
+                string msg = ss.str();
+                if (!serverGlobalParams.quiet)
+                    log() << msg << endl;
+                ReplInfo r(msg.c_str());
+                sleepsecs(s);
+            }
+
+            OperationContextImpl txn;
+            txn.getClient()->getAuthorizationSession()->grantInternalAuthorization();
+
             {
-                ScopedTransaction transaction(txn, MODE_X);
-                Lock::GlobalWrite lk(txn->lockState());
+                ScopedTransaction transaction(&txn, MODE_X);
+                Lock::GlobalWrite lk(txn.lockState());
                 if ( replAllDead ) {
                     // throttledForceResyncDead can throw
                     if ( !getGlobalReplicationCoordinator()->getSettings().autoresync ||
-                            !ReplSource::throttledForceResyncDead( txn, "auto" ) ) {
+                            !ReplSource::throttledForceResyncDead( &txn, "auto" ) ) {
                         log() << "all sources dead: " << replAllDead << ", sleeping for 5 seconds" << endl;
                         break;
                     }
@@ -1226,7 +1241,7 @@ namespace repl {
 
             try {
                 int nApplied = 0;
-                s = _replMain(txn, sources, nApplied);
+                s = _replMain(&txn, sources, nApplied);
                 if( s == 1 ) {
                     if( nApplied == 0 ) s = 2;
                     else if( nApplied > 100 ) {
@@ -1242,8 +1257,8 @@ namespace repl {
             }
 
             {
-                ScopedTransaction transaction(txn, MODE_X);
-                Lock::GlobalWrite lk(txn->lockState());
+                ScopedTransaction transaction(&txn, MODE_X);
+                Lock::GlobalWrite lk(txn.lockState());
                 verify( syncing == 1 );
                 syncing--;
             }
@@ -1251,16 +1266,6 @@ namespace repl {
             if( relinquishSyncingSome )  {
                 relinquishSyncingSome = 0;
                 s = 1; // sleep before going back in to syncing=1
-            }
-
-            if ( s ) {
-                stringstream ss;
-                ss << "sleep " << s << " sec before next pass";
-                string msg = ss.str();
-                if (!serverGlobalParams.quiet)
-                    log() << msg << endl;
-                ReplInfo r(msg.c_str());
-                sleepsecs(s);
             }
         }
     }
@@ -1302,12 +1307,9 @@ namespace repl {
         sleepsecs(1);
         Client::initThread("replslave");
 
-        OperationContextImpl txn;
-        txn.getClient()->getAuthorizationSession()->grantInternalAuthorization();
-
         while ( 1 ) {
             try {
-                replMain(&txn);
+                replMain();
                 sleepsecs(5);
             }
             catch ( AssertionException& ) {

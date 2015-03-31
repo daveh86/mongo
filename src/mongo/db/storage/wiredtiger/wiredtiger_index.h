@@ -100,6 +100,8 @@ namespace mongo {
 
         virtual bool isEmpty(OperationContext* txn);
 
+        virtual long long numEntries( OperationContext* txn ) const;
+
         virtual long long getSpaceUsedBytes( OperationContext* txn ) const;
 
         bool isDup(WT_CURSOR *c, const BSONObj& key, const RecordId& loc );

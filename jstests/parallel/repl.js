@@ -46,6 +46,9 @@ t.add( EventGenerator.dispatch, g.getEvents() );
 
 t.run( "one or more tests failed" );
 
+//Sleep long enough for the master/slave replication system to finish its sync
+sleep(10000);
+
 masterValidation = m.getDB( "test" )[ baseName ].validate();
 assert( masterValidation.valid, tojson( masterValidation ) );
 
