@@ -348,6 +348,12 @@ add_option('use-system-boost',
     nargs=0,
 )
 
+add_option('use-system-lz4',
+    help='use system version of LZ4 library',
+    nargs=0,
+)
+
+
 add_option('use-system-snappy',
     help='use system version of snappy library',
     nargs=0,
@@ -2030,6 +2036,9 @@ def doConfigure(myenv):
 
     if use_system_version_of_library("zlib"):
         conf.FindSysLibDep("zlib", ["zdll" if conf.env.TargetOSIs('windows') else "z"])
+
+    if use_system_version_of_library("lz4"):
+        conf.FindSysLibDep("lz4", ["lz4"])
 
     if use_system_version_of_library("stemmer"):
         conf.FindSysLibDep("stemmer", ["stemmer"])

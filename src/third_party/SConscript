@@ -5,6 +5,7 @@ Import("wiredtiger")
 
 snappySuffix = '-1.1.2'
 zlibSuffix = '-1.2.8'
+lz4Suffix = '-r129'
 pcreSuffix = "-8.37"
 
 thirdPartyIncludePathList = [
@@ -31,6 +32,10 @@ if not use_system_version_of_library('snappy'):
 if not use_system_version_of_library('zlib'):
     thirdPartyIncludePathList.append(
         ('zlib', '#/src/third_party/zlib' + zlibSuffix))
+
+if not use_system_version_of_library('lz4'):
+    thirdPartyIncludePathList.append(
+        ('lz4', '#/src/third_party/lz4' + lz4Suffix))
 
 if not use_system_version_of_library('v8'):
     thirdPartyIncludePathList.append(
@@ -176,6 +181,27 @@ zlibEnv.Library(
     target="shim_zlib",
     source=[
         'shim_zlib.cpp',
+    ])
+
+if use_system_version_of_library("lz4"):
+    lz4Env = env.Clone(
+        SYSLIBDEPS=[
+            env['LIBDEPS_LZ4_SYSLIBDEP'],
+        ])
+else:
+    lz4Env = env.Clone()
+    lz4Env.InjectThirdPartyIncludePaths(libraries=['lz4'])
+    lz4Env.InjectMongoIncludePaths()
+    lz4Env.SConscript('lz4' + lz4Suffix + '/SConscript', exports={ 'env' : lz4Env })
+    lz4Env = lz4Env.Clone(
+        LIBDEPS=[
+            'lz4' + lz4Suffix + '/lz4',
+        ])
+
+lz4Env.Library(
+    target="shim_lz4",
+    source=[
+        'shim_lz4.cpp',
     ])
 
 if usev8:
