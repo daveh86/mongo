@@ -40,11 +40,14 @@
 
 namespace mongo {
 
-WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int cachePartition, int epoch)
-    : _cachePartition(cachePartition), _epoch(epoch), _session(NULL), _cursorsOut(0) {
-    int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
-    invariantWTOK(ret);
-}
+    WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int epoch)
+        : _epoch(epoch),
+          _session(NULL),
+          _cursorsOut(0) {
+        _next = NULL;
+        int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
+        invariantWTOK(ret);
+    }
 
 WiredTigerSession::~WiredTigerSession() {
     if (_session) {
@@ -102,22 +105,26 @@ void WiredTigerSession::closeAllCursors() {
     _curmap.clear();
 }
 
-namespace {
-AtomicUInt64 nextCursorId(1);
-AtomicUInt64 cachePartitionGen(0);
-}
-// static
-uint64_t WiredTigerSession::genCursorId() {
-    return nextCursorId.fetchAndAdd(1);
-}
+    namespace {
+        AtomicUInt64 nextCursorId(1);
+        AtomicUInt64 currSessionsInCache(1);
+    }
+    // static
+    uint64_t WiredTigerSession::genCursorId() {
+        return nextCursorId.fetchAndAdd(1);
+    }
 
 // -----------------------
 
-WiredTigerSessionCache::WiredTigerSessionCache(WiredTigerKVEngine* engine)
-    : _engine(engine), _conn(engine->getConnection()), _shuttingDown(0) {}
+    WiredTigerSessionCache::WiredTigerSessionCache( WiredTigerKVEngine* engine )
+        : _engine( engine ), _conn( engine->getConnection() ), _sessionsOut(0), _shuttingDown(0) {
+        _head = NULL;
+    }
 
-WiredTigerSessionCache::WiredTigerSessionCache(WT_CONNECTION* conn)
-    : _engine(NULL), _conn(conn), _shuttingDown(0) {}
+    WiredTigerSessionCache::WiredTigerSessionCache( WT_CONNECTION* conn )
+        : _engine( NULL ), _conn( conn ), _sessionsOut(0), _shuttingDown(0) {
+        _head = NULL;
+    }
 
 WiredTigerSessionCache::~WiredTigerSessionCache() {
     shuttingDown();
@@ -138,24 +145,23 @@ void WiredTigerSessionCache::shuttingDown() {
     closeAll();
 }
 
-void WiredTigerSessionCache::closeAll() {
-    for (int i = 0; i < NumSessionCachePartitions; i++) {
-        SessionPool swapPool;
-
-        {
-            stdx::unique_lock<SpinLock> scopedLock(_cache[i].lock);
-            _cache[i].pool.swap(swapPool);
-            _cache[i].epoch++;
+    void WiredTigerSessionCache::closeAll() {
+        // Increment the epoch as we are now closing all sessions with this epoch
+        _epoch++;
+        // Grab each session from the list and delete
+        while ( _head.load(std::memory_order_relaxed) != NULL ){
+            WiredTigerSession* cachedSession = _head.load();
+            // Keep trying to remove the head until we succeed
+            while ( !_head.compare_exchange_weak(cachedSession, cachedSession->_next,
+                     std::memory_order_consume, std::memory_order_relaxed)) {
+                cachedSession = _head.load(std::memory_order_consume);
+                if ( cachedSession == NULL)
+                    return;
+            }
+            currSessionsInCache.fetchAndSubtract(1);
+            delete cachedSession;
         }
-
-        // New sessions will be created if need be outside of the lock
-        for (size_t i = 0; i < swapPool.size(); i++) {
-            delete swapPool[i];
-        }
-
-        swapPool.clear();
     }
-}
 
 WiredTigerSession* WiredTigerSessionCache::getSession() {
     boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
@@ -164,62 +170,76 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
     // operations should be allowed to start.
     invariant(!_shuttingDown.loadRelaxed());
 
-    // Spread sessions uniformly across the cache partitions
-    const int cachePartition = cachePartitionGen.addAndFetch(1) % NumSessionCachePartitions;
+        _sessionsOut++;
 
-    int epoch;
+        // Grab the current top session
+        WiredTigerSession* cachedSession = _head.load(std::memory_order_relaxed);
 
-    {
-        stdx::unique_lock<SpinLock> cachePartitionLock(_cache[cachePartition].lock);
-        epoch = _cache[cachePartition].epoch;
-
-        if (!_cache[cachePartition].pool.empty()) {
-            WiredTigerSession* cachedSession = _cache[cachePartition].pool.back();
-            _cache[cachePartition].pool.pop_back();
-
+        // If there is no session stored make a new one.
+        if ( cachedSession != NULL ){
+            /**
+             * We are popping here, compare_exchange will try and replace the
+             * current head (our session) with the next session in the queue
+             */
+            while ( !_head.compare_exchange_weak(cachedSession, cachedSession->_next,
+                    std::memory_order_consume, std::memory_order_relaxed)) {
+                cachedSession = _head.load(std::memory_order_consume);
+                if ( cachedSession != NULL ){
+                    return new WiredTigerSession(_conn, _epoch);
+                }
+            }
+            // Mark the next session as NULL for when we put it back
+            cachedSession->_next = NULL;
+            currSessionsInCache.fetchAndSubtract(1);
             return cachedSession;
         }
+
+        // Outside of the cache partition lock, but on release will be put back on the cache
+        return new WiredTigerSession(_conn, _epoch);
     }
 
-    // Outside of the cache partition lock, but on release will be put back on the cache
-    return new WiredTigerSession(_conn, cachePartition, epoch);
-}
+    void WiredTigerSessionCache::releaseSession( WiredTigerSession* session ) {
+        invariant( session );
+        invariant(session->cursorsOut() == 0);
 
-void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
-    invariant(session);
-    invariant(session->cursorsOut() == 0);
-
-    boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
-    if (_shuttingDown.loadRelaxed()) {
-        // Leak the session in order to avoid race condition with clean shutdown, where the
-        // storage engine is ripped from underneath transactions, which are not "active"
-        // (i.e., do not have any locks), but are just about to delete the recovery unit.
-        // See SERVER-16031 for more information.
-        return;
-    }
-
-    // This checks that we are only caching idle sessions and not something which might hold
-    // locks or otherwise prevent truncation.
-    {
-        WT_SESSION* ss = session->getSession();
-        uint64_t range;
-        invariantWTOK(ss->transaction_pinned_range(ss, &range));
-        invariant(range == 0);
-    }
-
-    const int cachePartition = session->_getCachePartition();
-    bool returnedToCache = false;
-
-    if (cachePartition >= 0) {
-        stdx::unique_lock<SpinLock> cachePartitionLock(_cache[cachePartition].lock);
-
-        invariant(session->_getEpoch() <= _cache[cachePartition].epoch);
-
-        if (session->_getEpoch() == _cache[cachePartition].epoch) {
-            _cache[cachePartition].pool.push_back(session);
-            returnedToCache = true;
+        boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
+        if (_shuttingDown.loadRelaxed()) {
+            // Leak the session in order to avoid race condition with clean shutdown, where the
+            // storage engine is ripped from underneath transactions, which are not "active"
+            // (i.e., do not have any locks), but are just about to delete the recovery unit.
+            // See SERVER-16031 for more information.
+            return;
         }
-    }
+
+        // This checks that we are only caching idle sessions and not something which might hold
+        // locks or otherwise prevent truncation.
+        {
+            WT_SESSION* ss = session->getSession();
+            uint64_t range;
+            invariantWTOK(ss->transaction_pinned_range(ss, &range));
+            invariant(range == 0);
+        }
+
+        bool returnedToCache = false;
+
+        invariant(session->_getEpoch() <= _epoch);
+
+        /**
+         * In this case we only want to return sessions until we hit the maximum number of
+         * sessions we have ever seen demand for concurrently. We also want to immediately
+         * delete any session that is from a non-current epoch.
+         */
+        if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _sessionsOut.load() ) {
+            session->_next = _head.load(std::memory_order_relaxed);
+            // Switch in the new head
+            while ( !_head.compare_exchange_weak(session->_next, session,
+                    std::memory_order_release, std::memory_order_relaxed)) {
+                session->_next = _head.load(std::memory_order_acquire);
+            }
+            returnedToCache = true;
+            currSessionsInCache.fetchAndAdd(1);
+        }
+        _sessionsOut--;
 
     // Do all cleanup outside of the cache partition spinlock.
     if (!returnedToCache) {
