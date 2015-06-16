@@ -187,8 +187,7 @@ namespace mongo {
              */
             while ( !_head.compare_exchange_weak(cachedSession, cachedSession->_next,
                     std::memory_order_consume, std::memory_order_relaxed)) {
-                cachedSession = _head.load(std::memory_order_consume);
-                if ( cachedSession != NULL ){
+                if ( cachedSession == NULL ){
                     return new WiredTigerSession(_conn, _epoch);
                 }
             }
@@ -238,7 +237,7 @@ namespace mongo {
             // Switch in the new head
             while ( !_head.compare_exchange_weak(session->_next, session,
                     std::memory_order_release, std::memory_order_relaxed)) {
-                session->_next = _head.load(std::memory_order_acquire);
+                // Should check the session sizing in here.
             }
             returnedToCache = true;
             currSessionsInCache.fetchAndAdd(1);
