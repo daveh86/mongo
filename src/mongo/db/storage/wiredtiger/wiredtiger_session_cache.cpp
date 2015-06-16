@@ -122,12 +122,14 @@ namespace mongo {
     // -----------------------
 
     WiredTigerSessionCache::WiredTigerSessionCache( WiredTigerKVEngine* engine )
-        : _engine( engine ), _conn( engine->getConnection() ), _sessionsOut(0), _shuttingDown(0) {
+        : _engine( engine ), _conn( engine->getConnection() ),
+          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
         _head = NULL;
     }
 
     WiredTigerSessionCache::WiredTigerSessionCache( WT_CONNECTION* conn )
-        : _engine( NULL ), _conn( conn ), _sessionsOut(0), _shuttingDown(0) {
+        : _engine( NULL ), _conn( conn ),
+          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
         _head = NULL;
     }
 
@@ -232,7 +234,7 @@ namespace mongo {
          * sessions we have ever seen demand for concurrently. We also want to immediately
          * delete any session that is from a non-current epoch.
          */
-        if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _sessionsOut.load() ) {
+        if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _highWaterMark.load() ) {
             session->_next = _head.load(std::memory_order_relaxed);
             // Switch in the new head
             while ( !_head.compare_exchange_weak(session->_next, session,
@@ -241,6 +243,10 @@ namespace mongo {
             }
             returnedToCache = true;
             currSessionsInCache.fetchAndAdd(1);
+        }
+        // Set the high water mark if we need too
+        if( _sessionsOut.load(std::memory_order_relaxed) > _highWaterMark.load(std::memory_order_relaxed)) {
+            _highWaterMark = _sessionsOut.load(std::memory_order_relaxed);
         }
         _sessionsOut--;
 
