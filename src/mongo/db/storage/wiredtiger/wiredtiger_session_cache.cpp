@@ -60,12 +60,15 @@ namespace mongo {
                                             uint64_t id,
                                             bool forRecordStore) {
         {
-            Cursors& cursors = _curmap[id];
-            if ( !cursors.empty() ) {
-                WT_CURSOR* save = cursors.back();
-                cursors.pop_back();
-                _cursorsOut++;
-                return save;
+            if ( !_curmap.empty() ) {
+                for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
+                    if ( i->first == id ) {
+                        WT_CURSOR* save = i->second;
+                        _curmap.erase(i);
+                        _cursorsOut++;
+                        return save;
+                    }
+                }
             }
         }
         WT_CURSOR* c = NULL;
@@ -85,26 +88,29 @@ namespace mongo {
         invariant( cursor );
         _cursorsOut--;
 
-        Cursors& cursors = _curmap[id];
-        if ( cursors.size() > 10u ) {
+        // We want to store at most 10 cursors, each with a different id
+        if ( _curmap.size() > 10u ) {
             invariantWTOK( cursor->close(cursor) );
         }
         else {
             invariantWTOK( cursor->reset( cursor ) );
-            cursors.push_back( cursor );
+            for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
+                if ( i->first == id ) {
+                    invariantWTOK( cursor->close(cursor) );
+                    return;
+                }
+            }
+            _curmap.push_back( std::make_pair(id, cursor) );
         }
     }
 
     void WiredTigerSession::closeAllCursors() {
         invariant( _session );
-        for (CursorMap::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
-            Cursors& cursors = i->second;
-            for ( size_t j = 0; j < cursors.size(); j++ ) {
-                WT_CURSOR *cursor = cursors[j];
-                if (cursor) {
-                    int ret = cursor->close(cursor);
-                    invariantWTOK(ret);
-                }
+        for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
+            WT_CURSOR *cursor = i->second;
+            if (cursor) {
+                int ret = cursor->close(cursor);
+                invariantWTOK(ret);
             }
         }
         _curmap.clear();
@@ -229,11 +235,17 @@ namespace mongo {
 
         invariant(session->_getEpoch() <= _epoch);
 
+        // Set the high water mark if we need too
+        if( _sessionsOut.load(std::memory_order_relaxed) > _highWaterMark.load(std::memory_order_relaxed)) {
+            _highWaterMark = _sessionsOut.load(std::memory_order_relaxed);
+        }
+
         /**
          * In this case we only want to return sessions until we hit the maximum number of
          * sessions we have ever seen demand for concurrently. We also want to immediately
          * delete any session that is from a non-current epoch.
          */
+
         if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _highWaterMark.load() ) {
             session->_next = _head.load(std::memory_order_relaxed);
             // Switch in the new head
@@ -244,12 +256,8 @@ namespace mongo {
             returnedToCache = true;
             currSessionsInCache.fetchAndAdd(1);
         }
-        // Set the high water mark if we need too
-        if( _sessionsOut.load(std::memory_order_relaxed) > _highWaterMark.load(std::memory_order_relaxed)) {
-            _highWaterMark = _sessionsOut.load(std::memory_order_relaxed);
-        }
-        _sessionsOut--;
 
+        _sessionsOut--;
         // Do all cleanup outside of the cache partition spinlock.
         if (!returnedToCache) {
             delete session;
