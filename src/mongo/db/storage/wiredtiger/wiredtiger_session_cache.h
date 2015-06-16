@@ -31,7 +31,6 @@
 
 #pragma once
 
-#include <map>
 #include <string>
 #include <vector>
 
@@ -93,9 +92,9 @@ class WiredTigerKVEngine;
     private:
         friend class WiredTigerSessionCache;
 
-        typedef std::vector<WT_CURSOR*> Cursors;
-        typedef std::map<uint64_t, Cursors> CursorMap;
-
+        // The cursor cache is a vector of pairs that contain an ID and cursor
+        typedef std::pair<uint64_t, WT_CURSOR*> CursorMap;
+        typedef std::vector<CursorMap> CursorCache;
 
         // Used internally by WiredTigerSessionCache
         int _getEpoch() const { return _epoch; }
@@ -103,7 +102,7 @@ class WiredTigerKVEngine;
 
         const int _epoch;
         WT_SESSION* _session; // owned
-        CursorMap _curmap; // owned
+        CursorCache _curmap; // owned
         int _cursorsOut;
 
         // Sessions are stored as a linked list stack. So each Session needs a pointer
