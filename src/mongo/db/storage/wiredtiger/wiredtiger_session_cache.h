@@ -143,6 +143,9 @@ class WiredTigerKVEngine;
 
         // The sessions are stored as a linked list stack. So we need to track the head
         std::atomic<WiredTigerSession*> _head;
+        // This is the most sessions we have ever concurrently used. Its our naive way
+        // to know if we should toss a session or return it to cache
+        std::atomic_uint_fast64_t _highWaterMark;
     };
 
 }
