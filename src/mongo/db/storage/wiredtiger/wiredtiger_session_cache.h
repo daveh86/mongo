@@ -64,7 +64,7 @@ class WiredTigerKVEngine;
          *          of -1 means that this value is not necessary since the session will not be
          *          cached.
          */
-        WiredTigerSession(WT_CONNECTION* conn, int epoch = -1);
+        WiredTigerSession(WT_CONNECTION* conn, int epoch = -1, uint64_t id = 0);
         ~WiredTigerSession();
 
         WT_SESSION* getSession() const { return _session; }
@@ -88,6 +88,8 @@ class WiredTigerKVEngine;
          * For "metadata:" cursors. Guaranteed never to collide with genCursorId() ids.
          */
         static const uint64_t kMetadataCursorId = 0;
+
+	uint64_t sessionId;
 
     private:
         friend class WiredTigerSessionCache;
