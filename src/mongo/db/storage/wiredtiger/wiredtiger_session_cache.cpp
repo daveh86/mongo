@@ -62,8 +62,8 @@ namespace mongo {
                                             uint64_t id,
                                             bool forRecordStore) {
         {
-             for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
-                if ( i->first == id ) {
+             for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
+                if (i->first == id) {
                     WT_CURSOR *c = i->second;
                     _cursors.erase(i);
                     _cursorsOut++;
@@ -79,28 +79,28 @@ namespace mongo {
                                         &c);
         if (ret != ENOENT)
             invariantWTOK(ret);
-        if ( c ) _cursorsOut++;
+        if (c) _cursorsOut++;
         return c;
     }
 
     void WiredTigerSession::releaseCursor(uint64_t id, WT_CURSOR *cursor) {
-        invariant( _session );
-        invariant( cursor );
+        invariant(_session);
+        invariant(cursor);
         _cursorsOut--;
 
-        invariantWTOK( cursor->reset( cursor ) );
-        _cursors.push_back( std::make_pair(id, cursor) );
+        invariantWTOK(cursor->reset(cursor));
+        _cursors.push_back(std::make_pair(id, cursor));
 
-        if ( _cursors.size() > 10u ) {
+        if (_cursors.size() > 100u) {
             cursor = _cursors.front().second;
             _cursors.pop_front();
-            invariantWTOK( cursor->close(cursor) );
+            invariantWTOK(cursor->close(cursor));
         }
     }
 
     void WiredTigerSession::closeAllCursors() {
-        invariant( _session );
-        for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
+        invariant(_session);
+        for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
             WT_CURSOR *cursor = i->second;
             if (cursor) {
                 int ret = cursor->close(cursor);
@@ -122,14 +122,14 @@ namespace mongo {
 
     // -----------------------
 
-    WiredTigerSessionCache::WiredTigerSessionCache( WiredTigerKVEngine* engine )
-        : _engine( engine ), _conn( engine->getConnection() ),
+    WiredTigerSessionCache::WiredTigerSessionCache(WiredTigerKVEngine* engine)
+        : _engine(engine), _conn(engine->getConnection()),
           _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
         _head = NULL;
     }
 
-    WiredTigerSessionCache::WiredTigerSessionCache( WT_CONNECTION* conn )
-        : _engine( NULL ), _conn( conn ),
+    WiredTigerSessionCache::WiredTigerSessionCache(WT_CONNECTION* conn)
+        : _engine(NULL), _conn(conn),
           _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
         _head = NULL;
     }
@@ -157,10 +157,9 @@ namespace mongo {
         _epoch++;
         // Grab each session from the list and delete
         WiredTigerSession* cachedSession;
-        while ( (cachedSession = _head.load(std::memory_order_relaxed)) != NULL ) {
+        while ((cachedSession = _head.load()) != 0) {
             // Keep trying to remove the head until we succeed
-            if ( _head.compare_exchange_weak(cachedSession, cachedSession->_next,
-                        std::memory_order_consume, std::memory_order_relaxed)) {
+            if (_head.compare_exchange_weak(cachedSession, cachedSession->_next)) {
                 currSessionsInCache.fetchAndSubtract(1);
                 delete cachedSession;
             }
@@ -173,22 +172,18 @@ namespace mongo {
         // We should never be able to get here after _shuttingDown is set, because no new
         // operations should be allowed to start.
         invariant(!_shuttingDown.loadRelaxed());
-
         
         // Set the high water mark if we need too
-        if( ++_sessionsOut > _highWaterMark ) {
+        if (++_sessionsOut > _highWaterMark) {
             _highWaterMark = _sessionsOut.load();
         }
 
-        // Grab the current top session
-        WiredTigerSession* cachedSession = _head.load();
-
         // We are popping here, compare_exchange will try and replace the
         // current head (our session) with the next session in the queue
+        WiredTigerSession* cachedSession = _head.load();
         while (cachedSession &&
-                !_head.compare_exchange_weak(cachedSession, cachedSession->_next,
-                std::memory_order_consume, std::memory_order_relaxed))
-            ;
+               !_head.compare_exchange_weak(cachedSession, cachedSession->_next)) {
+        }
 
 	    if (cachedSession) {
             // Clear the next session for when we put it back
@@ -201,19 +196,17 @@ namespace mongo {
         return new WiredTigerSession(_conn, _epoch, nextSessionId.fetchAndAdd(1));
     }
 
-    void WiredTigerSessionCache::releaseSession( WiredTigerSession* session ) {
-        invariant( session );
+    void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
+        invariant(session);
         invariant(session->cursorsOut() == 0);
 
-        {
-            boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
-            if (_shuttingDown.loadRelaxed()) {
-                // Leak the session in order to avoid race condition with clean shutdown, where the
-                // storage engine is ripped from underneath transactions, which are not "active"
-                // (i.e., do not have any locks), but are just about to delete the recovery unit.
-                // See SERVER-16031 for more information.
-                return;
-            }
+        boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
+        if (_shuttingDown.loadRelaxed()) {
+            // Leak the session in order to avoid race condition with clean shutdown, where the
+            // storage engine is ripped from underneath transactions, which are not "active"
+            // (i.e., do not have any locks), but are just about to delete the recovery unit.
+            // See SERVER-16031 for more information.
+            return;
         }
 
         // This checks that we are only caching idle sessions and not something which might hold
@@ -234,18 +227,18 @@ namespace mongo {
          * sessions we have ever seen demand for concurrently. We also want to immediately
          * delete any session that is from a non-current epoch.
          */
-
-        if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _highWaterMark.load() ) {
+        if (session->_getEpoch() == _epoch) {
             // Switch in the new head
-            // Avoid GCC bug 60272
-            WiredTigerSession *old_head = _head.load(std::memory_order_relaxed);
-            do {
+            // Use a separate variable to Avoid GCC bug 60272
+            WiredTigerSession *old_head = _head.load();
+            while (currSessionsInCache.load() < _highWaterMark.load()) {
                 session->_next = old_head;
-	        } while ( !_head.compare_exchange_weak(session->_next, session,
-                    std::memory_order_release, std::memory_order_relaxed));
-
-            returnedToCache = true;
-            currSessionsInCache.fetchAndAdd(1);
+	            if (_head.compare_exchange_weak(old_head, session)) {
+                    returnedToCache = true;
+                    currSessionsInCache.fetchAndAdd(1);
+                    break;
+                }
+            }
         }
 
         _sessionsOut--;
