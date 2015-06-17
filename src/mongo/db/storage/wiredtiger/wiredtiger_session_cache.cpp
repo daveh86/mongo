@@ -41,11 +41,12 @@
 namespace mongo {
 
     WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int epoch, uint64_t id)
-        : _epoch(epoch),
+        : sessionId(id),
+          _epoch(epoch),
           _session(NULL),
-          _cursorsOut(0) {
-        _next = NULL;
-	sessionId = id;
+          _cursorsOut(0),
+          _next(0) {
+
         int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
         invariantWTOK(ret);
     }
@@ -61,18 +62,16 @@ WiredTigerSession::~WiredTigerSession() {
                                             uint64_t id,
                                             bool forRecordStore) {
         {
-            if ( !_curmap.empty() ) {
-                for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
-                    if ( i->first == id ) {
-                        WT_CURSOR* save = i->second;
-                        _curmap.erase(i);
-                        _cursorsOut++;
-                        return save;
-                    }
+             for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
+                if ( i->first == id ) {
+                    WT_CURSOR *c = i->second;
+                    _cursors.erase(i);
+                    _cursorsOut++;
+                    return c;
                 }
             }
         }
-        WT_CURSOR* c = NULL;
+        WT_CURSOR *c = NULL;
         int ret = _session->open_cursor(_session,
                                         uri.c_str(),
                                         NULL,
@@ -89,38 +88,32 @@ WiredTigerSession::~WiredTigerSession() {
         invariant( cursor );
         _cursorsOut--;
 
-        // We want to store at most 10 cursors, each with a different id
-        if ( _curmap.size() > 10u ) {
+        invariantWTOK( cursor->reset( cursor ) );
+        _cursors.push_back( std::make_pair(id, cursor) );
+
+        if ( _cursors.size() > 10u ) {
+            cursor = _cursors.front().second;
+            _cursors.pop_front();
             invariantWTOK( cursor->close(cursor) );
-        }
-        else {
-            invariantWTOK( cursor->reset( cursor ) );
-            for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
-                if ( i->first == id ) {
-                    invariantWTOK( cursor->close(cursor) );
-                    return;
-                }
-            }
-            _curmap.push_back( std::make_pair(id, cursor) );
         }
     }
 
     void WiredTigerSession::closeAllCursors() {
         invariant( _session );
-        for (CursorCache::iterator i = _curmap.begin(); i != _curmap.end(); ++i ) {
+        for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i ) {
             WT_CURSOR *cursor = i->second;
             if (cursor) {
                 int ret = cursor->close(cursor);
                 invariantWTOK(ret);
             }
         }
-        _curmap.clear();
+        _cursors.clear();
     }
 
     namespace {
         AtomicUInt64 nextCursorId(1);
-        AtomicUInt64 currSessionsInCache(1);
-	AtomicUInt64 nextSessionId(1);
+        AtomicUInt64 currSessionsInCache(0);
+	    AtomicUInt64 nextSessionId(1);
     }
     // static
     uint64_t WiredTigerSession::genCursorId() {
@@ -163,18 +156,15 @@ void WiredTigerSessionCache::shuttingDown() {
     void WiredTigerSessionCache::closeAll() {
         // Increment the epoch as we are now closing all sessions with this epoch
         _epoch++;
-	log() << "closeall sessions called";
         // Grab each session from the list and delete
-        while ( _head.load() != NULL ){
-            WiredTigerSession* cachedSession = _head.load();
+        WiredTigerSession* cachedSession;
+        while ( (cachedSession = _head.load(std::memory_order_relaxed)) != NULL ) {
             // Keep trying to remove the head until we succeed
-            while ( !_head.compare_exchange_weak(cachedSession, cachedSession->_next)) {
-                cachedSession = _head.load();
-                if ( cachedSession == NULL)
-                    return;
+            if ( _head.compare_exchange_weak(cachedSession, cachedSession->_next,
+                        std::memory_order_consume, std::memory_order_relaxed)) {
+                currSessionsInCache.fetchAndSubtract(1);
+                delete cachedSession;
             }
-            currSessionsInCache.fetchAndSubtract(1);
-            delete cachedSession;
         }
     }
 
@@ -185,39 +175,46 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
     // operations should be allowed to start.
     invariant(!_shuttingDown.loadRelaxed());
 
-        _sessionsOut++;
+        
+        // Set the high water mark if we need too
+        if( ++_sessionsOut > _highWaterMark ) {
+            _highWaterMark = _sessionsOut.load();
+        }
 
         // Grab the current top session
         WiredTigerSession* cachedSession = _head.load();
-            /**
-             * We are popping here, compare_exchange will try and replace the
-             * current head (our session) with the next session in the queue
-             */
-        while (cachedSession && !_head.compare_exchange_weak(cachedSession, cachedSession->_next)) { }
-	if ( cachedSession != NULL ) {
-            // Mark the next session as NULL for when we put it back
-            cachedSession->_next = NULL;
+
+        // We are popping here, compare_exchange will try and replace the
+        // current head (our session) with the next session in the queue
+        while (cachedSession &&
+                !_head.compare_exchange_weak(cachedSession, cachedSession->_next,
+                std::memory_order_consume, std::memory_order_relaxed))
+            ;
+
+	    if (cachedSession) {
+            // Clear the next session for when we put it back
+            cachedSession->_next = 0;
             currSessionsInCache.fetchAndSubtract(1);
-            log() << " took session: " << cachedSession->sessionId;
             return cachedSession;
         }
 
         // Outside of the cache partition lock, but on release will be put back on the cache
-	        nextSessionId.fetchAndAdd(1);
-        return new WiredTigerSession(_conn, _epoch, nextSessionId.load());
+        return new WiredTigerSession(_conn, _epoch, nextSessionId.fetchAndAdd(1));
     }
 
     void WiredTigerSessionCache::releaseSession( WiredTigerSession* session ) {
         invariant( session );
         invariant(session->cursorsOut() == 0);
 
-        boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
-        if (_shuttingDown.loadRelaxed()) {
-            // Leak the session in order to avoid race condition with clean shutdown, where the
-            // storage engine is ripped from underneath transactions, which are not "active"
-            // (i.e., do not have any locks), but are just about to delete the recovery unit.
-            // See SERVER-16031 for more information.
-            return;
+        {
+            boost::shared_lock<boost::shared_mutex> shutdownLock(_shutdownLock);
+            if (_shuttingDown.loadRelaxed()) {
+                // Leak the session in order to avoid race condition with clean shutdown, where the
+                // storage engine is ripped from underneath transactions, which are not "active"
+                // (i.e., do not have any locks), but are just about to delete the recovery unit.
+                // See SERVER-16031 for more information.
+                return;
+            }
         }
 
         // This checks that we are only caching idle sessions and not something which might hold
@@ -233,11 +230,6 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
 
         invariant(session->_getEpoch() <= _epoch);
 
-        // Set the high water mark if we need too
-        if( _sessionsOut.load() > _highWaterMark.load()) {
-            _highWaterMark = _sessionsOut.load();
-        }
-
         /**
          * In this case we only want to return sessions until we hit the maximum number of
          * sessions we have ever seen demand for concurrently. We also want to immediately
@@ -245,11 +237,14 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
          */
 
         if (session->_getEpoch() == _epoch && currSessionsInCache.load() < _highWaterMark.load() ) {
-            session->_next = _head.load();
             // Switch in the new head
-            while ( !_head.compare_exchange_weak(session->_next, session)) {
-                // Should check the session sizing in here.
-            }
+            // Avoid GCC bug 60272
+            WiredTigerSession *old_head = _head.load(std::memory_order_relaxed);
+            do {
+                session->_next = old_head;
+	        } while ( !_head.compare_exchange_weak(session->_next, session,
+                    std::memory_order_release, std::memory_order_relaxed));
+
             returnedToCache = true;
             currSessionsInCache.fetchAndAdd(1);
         }
@@ -257,7 +252,6 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
         _sessionsOut--;
         // Do all cleanup outside of the cache partition spinlock.
         if (!returnedToCache) {
-            log() << "deleted session: " << session->sessionId;
             delete session;
         }
 
