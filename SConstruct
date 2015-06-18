@@ -1046,7 +1046,7 @@ if debugBuild:
     env.SetConfigHeaderDefine("MONGO_CONFIG_DEBUG_BUILD")
 
 if env.TargetOSIs('linux'):
-    env.Append( LIBS=['m'] )
+    env.Append( LIBS=['m', 'atomic'] )
 
 elif env.TargetOSIs('solaris'):
      env.Append( LIBS=["socket","resolv","lgrp"] )
@@ -1231,7 +1231,7 @@ if env.TargetOSIs('posix'):
         env.Append( SHLINKFLAGS=["-Wl,-z,now"] )
         env.Append( LINKFLAGS=["-rdynamic"] )
 
-    env.Append( LIBS=[ 'atomic' ] )
+    env.Append( LIBS=[ ] )
 
     #make scons colorgcc friendly
     for key in ('HOME', 'TERM'):
