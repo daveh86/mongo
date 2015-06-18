@@ -1,4 +1,5 @@
 // wiredtiger_session_cache.h
+
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -43,29 +44,29 @@
 
 namespace mongo {
 
-    template <class T> class TaggedSessionT {
+
+    /**
+     * A class for working around the ABA problem when creating atomic data stores
+     * This contains an instance of a tag integer and a pointer to the data structure
+     * that is to be stored. The tag value is incremented ever time an object is popped
+     * this avoids the ABA problem by making this object different every time the
+     * we pop from the stack
+     */
+    template <class T>
+    class TaggedAtomicWrapper {
     public:
-        TaggedSessionT(void): ptr(0), tag(0) {}
-        TaggedSessionT(TaggedSessionT const & p) = default;
-        TaggedSessionT & operator= (TaggedSessionT const & p) = default;
-        explicit TaggedSessionT(T* p, uint64_t t = 0): ptr(p), tag(t) {} 
+        TaggedAtomicWrapper(void): ptr(0), tag(0) {}
+        TaggedAtomicWrapper(TaggedAtomicWrapper const & p) = default;
+        TaggedAtomicWrapper & operator= (TaggedAtomicWrapper const & p) = default;
+        explicit TaggedAtomicWrapper(T* p, uint64_t t = 0): ptr(p), tag(t) {}
 
         void set(T * p, uint64_t t);
-
-        bool operator== (volatile TaggedSessionT const & p) const;
-	bool operator!= (volatile TaggedSessionT const & p) const;
-
+        bool operator== (volatile TaggedAtomicWrapper const & p) const;
+        bool operator!= (volatile TaggedAtomicWrapper const & p) const;
         T * get_ptr(void) const;
-        void set_ptr(T * p);
-
-	uint64_t get_tag() const;
-	uint64_t get_next_tag() const;
-	void set_tag(uint64_t t);
-
-	T & operator*() const;
-	T * operator->() const;
+        T & operator*() const;
+        T * operator->() const;
         operator bool(void) const;
-        
     protected:
        T* ptr;
        uint64_t tag;
@@ -117,7 +118,9 @@ namespace mongo {
          */
         static const uint64_t kMetadataCursorId = 0;
 
-	uint64_t sessionId;
+        uint64_t sessionId;
+
+        // The tag value is incremented every time the object is popped. This prevents ABA
         uint64_t _tag = 0;
 
     private:
@@ -125,7 +128,7 @@ namespace mongo {
 
         // Vodou for ABA problem
         //typedef std::pair<uint64_t, WiredTigerSession*> TaggedSession;
-        typedef TaggedSessionT<WiredTigerSession> Tagger;
+        typedef TaggedAtomicWrapper<WiredTigerSession> Tagger;
 
         // The cursor cache is a deque of pairs that contain an ID and cursor
         typedef std::pair<uint64_t, WT_CURSOR*> CursorMap;
@@ -162,8 +165,7 @@ namespace mongo {
     private:
 
         // Vodou for ABA problem
-        //typedef std::pair<uint64_t, WiredTigerSession*> TaggedSession;
-        typedef TaggedSessionT<WiredTigerSession> Tagger;
+        typedef TaggedAtomicWrapper<WiredTigerSession> Tagger;
 
         WiredTigerKVEngine* _engine; // not owned, might be NULL
         WT_CONNECTION* _conn; // not owned
@@ -178,12 +180,12 @@ namespace mongo {
         boost::shared_mutex _shutdownLock;
         AtomicUInt32 _shuttingDown; // Used as boolean - 0 = false, 1 = true
 
-        // The sessions are stored as a linked list stack. So we need to track the head
-        //std::atomic<TaggedSession*> _head;
         // This is the most sessions we have ever concurrently used. Its our naive way
         // to know if we should toss a session or return it to cache
         std::atomic_uint_fast64_t _highWaterMark;
-        std::atomic<Tagger> _head;	
+
+        // The sessions are stored as a linked list stack. So we need to track the head
+        std::atomic<Tagger> _head;
     };
 
 }

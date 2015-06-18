@@ -41,49 +41,32 @@
 namespace mongo {
 
         template <typename T>
-        void TaggedSessionT<T>::set(T * p, uint64_t t) {
+        void TaggedAtomicWrapper<T>::set(T * p, uint64_t t) {
             ptr = p;
             tag = t;
         }
-
         template <typename T>
-        bool TaggedSessionT<T>::operator== (volatile TaggedSessionT const & p) const {
+        bool TaggedAtomicWrapper<T>::operator== (volatile TaggedAtomicWrapper const & p) const {
             return (ptr == p.ptr) && (tag == p.tag);
         }
         template <typename T>
-        bool TaggedSessionT<T>::operator!= (volatile TaggedSessionT const & p) const {
+        bool TaggedAtomicWrapper<T>::operator!= (volatile TaggedAtomicWrapper const & p) const {
             return !operator==(p);
         }
         template <typename T>
-        T * TaggedSessionT<T>::get_ptr(void) const {
+        T * TaggedAtomicWrapper<T>::get_ptr(void) const {
             return ptr;
         }
         template <typename T>
-        void TaggedSessionT<T>::set_ptr(T * p) {
-            ptr = p;
-        }
-        template <typename T>
-        uint64_t TaggedSessionT<T>::get_tag() const {
-            return tag;
-        }
-        template <typename T>
-        uint64_t TaggedSessionT<T>::get_next_tag() const {
-            return (tag + 1);
-        }
-        template <typename T>
-        void TaggedSessionT<T>::set_tag(uint64_t t) {
-            tag = t;
-        }
-        template <typename T>
-        T & TaggedSessionT<T>::operator*() const {
+        T & TaggedAtomicWrapper<T>::operator*() const {
             return *ptr;
         }
         template <typename T>
-        T * TaggedSessionT<T>::operator->() const {
+        T * TaggedAtomicWrapper<T>::operator->() const {
             return ptr;
         }
         template <typename T>
-        TaggedSessionT<T>::operator bool(void) const {
+        TaggedAtomicWrapper<T>::operator bool(void) const {
             return ptr != 0;
         }
 
@@ -95,7 +78,6 @@ namespace mongo {
           _next(0) {
         int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
         invariantWTOK(ret);
-//log() << "created session: " << sessionId;
     }
 
     WiredTigerSession::~WiredTigerSession() {
@@ -160,7 +142,7 @@ namespace mongo {
     namespace {
         AtomicUInt64 nextCursorId(1);
         AtomicUInt64 currSessionsInCache(0);
-	AtomicUInt64 nextSessionId(1);
+        AtomicUInt64 nextSessionId(1);
     }
     // static
     uint64_t WiredTigerSession::genCursorId() {
@@ -204,12 +186,11 @@ namespace mongo {
         Tagger cachedSession;
         while ((cachedSession = _head.load()) != 0) {
             // Keep trying to remove the head until we succeed
-            //Tagger* new_head = cachedSession->_next;
             if (_head.compare_exchange_weak(cachedSession, Tagger(cachedSession->_next, cachedSession->_tag))) {
                 currSessionsInCache.fetchAndSubtract(1);
-		WiredTigerSession* session = cachedSession.get_ptr();
-		session->_tag++;
-		session->_next = 0;
+                WiredTigerSession* session = cachedSession.get_ptr();
+                session->_tag++;
+                session->_next = 0;
                 delete session;
             }
         }
@@ -221,7 +202,6 @@ namespace mongo {
         // We should never be able to get here after _shuttingDown is set, because no new
         // operations should be allowed to start.
         invariant(!_shuttingDown.loadRelaxed());
-        
         // Set the high water mark if we need too
         if (++_sessionsOut > _highWaterMark) {
             _highWaterMark = _sessionsOut.load();
@@ -231,15 +211,16 @@ namespace mongo {
         // current head (our session) with the next session in the queue
         Tagger cachedSession = _head.load();
         while (cachedSession &&
-               !_head.compare_exchange_weak(cachedSession, Tagger(cachedSession->_next, cachedSession->_tag))) {
+               !_head.compare_exchange_weak(cachedSession,
+               Tagger(cachedSession->_next, cachedSession->_tag))) {
         }
-	if (cachedSession) {
+        if (cachedSession) {
             currSessionsInCache.fetchAndSubtract(1);
-            // Clear the next session for when we put it back
             WiredTigerSession* outbound_session = cachedSession.get_ptr();
+            // Clear the next session for when we put it back
             outbound_session->_next = 0;
+            // Increment the tag to avoid ABA when this element is put back
             outbound_session->_tag++;
-//log() << "popped session: " << outbound_session->sessionId;
             return outbound_session;
         }
 
@@ -279,24 +260,24 @@ namespace mongo {
          * delete any session that is from a non-current epoch.
          */
         if (session->_getEpoch() == _epoch) {
-            // Switch in the new head
-            // Use a separate variable to Avoid GCC bug 60272
+            // When returning, we replace the atomic head with the session pointer and its
+            // tag value. This lets other threads work out that this has been popped and
+            // replaced, if they have been waiting the whole time this session has been
+            // out (ABA Problem).
             Tagger returning_session(session, session->_tag);
             Tagger old_head = _head.load();
             while (currSessionsInCache.load() < _highWaterMark.load()) {
-		returning_session->_next = old_head.get_ptr();
-	        if (_head.compare_exchange_weak(old_head, returning_session)) {
-                    returnedToCache = true;
-                    currSessionsInCache.fetchAndAdd(1);
-                    break;
+                returning_session->_next = old_head.get_ptr();
+                if (_head.compare_exchange_weak(old_head, returning_session)) {
+                        returnedToCache = true;
+                        currSessionsInCache.fetchAndAdd(1);
+                        break;
+                    }
                 }
-            }
         }
-//log() << "pushed session: " << session->sessionId;
         _sessionsOut--;
         // Do all cleanup outside of the cache partition spinlock.
         if (!returnedToCache) {
-//log() << "deleted session: " << session->sessionId;
             delete session;
         }
 
