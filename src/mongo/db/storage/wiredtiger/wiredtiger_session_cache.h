@@ -35,9 +35,9 @@
 #include <deque>
 
 #include <boost/thread/shared_mutex.hpp>
+
 #include <wiredtiger.h>
 
-#include "mongo/stdx/mutex.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/concurrency/spin_lock.h"
 
@@ -80,7 +80,7 @@ namespace mongo {
 
         static uint64_t genCursorId();
 
-        WiredTigerSession* next() const { return _next; };
+        WiredTigerSession* next() const { return _next->second; };
 
         //WiredTigerCursor* setNext(WiredTigerCursor* next) { _next = next };
 
@@ -93,6 +93,9 @@ namespace mongo {
 
     private:
         friend class WiredTigerSessionCache;
+
+        // Vodou for ABA problem
+        typedef std::pair<uint64_t, WiredTigerSession*> TaggedSession;
 
         // The cursor cache is a deque of pairs that contain an ID and cursor
         typedef std::pair<uint64_t, WT_CURSOR*> CursorMap;
@@ -107,7 +110,10 @@ namespace mongo {
         int _cursorsOut;
 
         // Sessions are stored as a linked list stack. So each Session needs a pointer
-        WiredTigerSession* _next;
+        TaggedSession* _next;
+
+        // The epoch for this session. Prevents ABA
+        uint64_t _tag;
     };
 
     class WiredTigerSessionCache {
@@ -128,6 +134,9 @@ namespace mongo {
 
     private:
 
+        // Vodou for ABA problem
+        typedef std::pair<uint64_t, WiredTigerSession*> TaggedSession;
+
         WiredTigerKVEngine* _engine; // not owned, might be NULL
         WT_CONNECTION* _conn; // not owned
         int _epoch;
@@ -142,7 +151,7 @@ namespace mongo {
         AtomicUInt32 _shuttingDown; // Used as boolean - 0 = false, 1 = true
 
         // The sessions are stored as a linked list stack. So we need to track the head
-        std::atomic<WiredTigerSession*> _head;
+        std::atomic<TaggedSession*> _head;
         // This is the most sessions we have ever concurrently used. Its our naive way
         // to know if we should toss a session or return it to cache
         std::atomic_uint_fast64_t _highWaterMark;
