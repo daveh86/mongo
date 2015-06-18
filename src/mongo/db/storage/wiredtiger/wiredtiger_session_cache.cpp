@@ -45,10 +45,11 @@ namespace mongo {
           _epoch(epoch),
           _session(NULL),
           _cursorsOut(0),
-          _next(0) {
-
+          _next(0),
+          _tag(0) {
         int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
         invariantWTOK(ret);
+log() << "created session: " << sessionId;
     }
 
     WiredTigerSession::~WiredTigerSession() {
@@ -113,7 +114,7 @@ namespace mongo {
     namespace {
         AtomicUInt64 nextCursorId(1);
         AtomicUInt64 currSessionsInCache(0);
-	    AtomicUInt64 nextSessionId(1);
+	AtomicUInt64 nextSessionId(1);
     }
     // static
     uint64_t WiredTigerSession::genCursorId() {
@@ -125,13 +126,13 @@ namespace mongo {
     WiredTigerSessionCache::WiredTigerSessionCache(WiredTigerKVEngine* engine)
         : _engine(engine), _conn(engine->getConnection()),
           _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
-        _head = NULL;
+        _head = 0;
     }
 
     WiredTigerSessionCache::WiredTigerSessionCache(WT_CONNECTION* conn)
         : _engine(NULL), _conn(conn),
           _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
-        _head = NULL;
+        _head = 0;
     }
 
 WiredTigerSessionCache::~WiredTigerSessionCache() {
@@ -147,7 +148,7 @@ void WiredTigerSessionCache::shuttingDown() {
             // This ensures that any calls, which are currently inside of getSession/releaseSession
             // will be able to complete before we start cleaning up the pool. Any others, which are
             // about to enter will return immediately because of _shuttingDown == true.
-            stdx::lock_guard<boost::shared_mutex> lk(_shutdownLock);
+            boost::lock_guard<boost::shared_mutex> lk(_shutdownLock);
         }
 
     closeAll();
@@ -157,12 +158,14 @@ void WiredTigerSessionCache::shuttingDown() {
         // Increment the epoch as we are now closing all sessions with this epoch
         _epoch++;
         // Grab each session from the list and delete
-        WiredTigerSession* cachedSession;
+        TaggedSession* cachedSession;
         while ((cachedSession = _head.load()) != 0) {
             // Keep trying to remove the head until we succeed
-            if (_head.compare_exchange_weak(cachedSession, cachedSession->_next)) {
+            if (_head.compare_exchange_weak(cachedSession, cachedSession->second->_next)) {
                 currSessionsInCache.fetchAndSubtract(1);
-                delete cachedSession;
+		cachedSession->second->_tag++;
+                delete cachedSession->second;
+		delete cachedSession;
             }
         }
     }
@@ -182,16 +185,20 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
 
         // We are popping here, compare_exchange will try and replace the
         // current head (our session) with the next session in the queue
-        WiredTigerSession* cachedSession = _head.load();
-        while (cachedSession &&
-               !_head.compare_exchange_weak(cachedSession, cachedSession->_next)) {
+        TaggedSession* cachedSession = _head.load();
+        while (cachedSession && cachedSession->second &&
+               !_head.compare_exchange_weak(cachedSession, cachedSession->second->_next)) {
         }
 
-	    if (cachedSession) {
+	if (cachedSession && cachedSession->second) {
             // Clear the next session for when we put it back
-            cachedSession->_next = 0;
+            WiredTigerSession* outbound_session = cachedSession->second;
+            delete cachedSession;
+            outbound_session->_next = 0;
+            outbound_session->_tag++;
             currSessionsInCache.fetchAndSubtract(1);
-            return cachedSession;
+log() << "popped session: " << outbound_session->sessionId;
+            return outbound_session;
         }
 
         // Outside of the cache partition lock, but on release will be put back on the cache
@@ -232,20 +239,23 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
         if (session->_getEpoch() == _epoch) {
             // Switch in the new head
             // Use a separate variable to Avoid GCC bug 60272
-            WiredTigerSession *old_head = _head.load();
+            TaggedSession* returning_session = new TaggedSession(session->_tag, session);
+            TaggedSession* old_head;
             while (currSessionsInCache.load() < _highWaterMark.load()) {
-                session->_next = old_head;
-	            if (_head.compare_exchange_weak(old_head, session)) {
+                old_head = _head.load();
+		returning_session->second->_next = old_head;
+	        if (_head.compare_exchange_weak(old_head, returning_session)) {
                     returnedToCache = true;
                     currSessionsInCache.fetchAndAdd(1);
                     break;
                 }
             }
         }
-
+log() << "pushed session: " << session->sessionId;
         _sessionsOut--;
         // Do all cleanup outside of the cache partition spinlock.
         if (!returnedToCache) {
+log() << "deleted session: " << session->sessionId;
             delete session;
         }
 
