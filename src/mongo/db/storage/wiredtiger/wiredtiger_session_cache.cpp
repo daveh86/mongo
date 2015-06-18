@@ -40,16 +40,62 @@
 
 namespace mongo {
 
+        template <typename T>
+        void TaggedSessionT<T>::set(T * p, uint64_t t) {
+            ptr = p;
+            tag = t;
+        }
+
+        template <typename T>
+        bool TaggedSessionT<T>::operator== (volatile TaggedSessionT const & p) const {
+            return (ptr == p.ptr) && (tag == p.tag);
+        }
+        template <typename T>
+        bool TaggedSessionT<T>::operator!= (volatile TaggedSessionT const & p) const {
+            return !operator==(p);
+        }
+        template <typename T>
+        T * TaggedSessionT<T>::get_ptr(void) const {
+            return ptr;
+        }
+        template <typename T>
+        void TaggedSessionT<T>::set_ptr(T * p) {
+            ptr = p;
+        }
+        template <typename T>
+        uint64_t TaggedSessionT<T>::get_tag() const {
+            return tag;
+        }
+        template <typename T>
+        uint64_t TaggedSessionT<T>::get_next_tag() const {
+            return (tag + 1);
+        }
+        template <typename T>
+        void TaggedSessionT<T>::set_tag(uint64_t t) {
+            tag = t;
+        }
+        template <typename T>
+        T & TaggedSessionT<T>::operator*() const {
+            return *ptr;
+        }
+        template <typename T>
+        T * TaggedSessionT<T>::operator->() const {
+            return ptr;
+        }
+        template <typename T>
+        TaggedSessionT<T>::operator bool(void) const {
+            return ptr != 0;
+        }
+
     WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int epoch, uint64_t id)
         : sessionId(id),
           _epoch(epoch),
           _session(NULL),
           _cursorsOut(0),
-          _next(0),
-          _tag(0) {
+          _next(0) {
         int ret = conn->open_session(conn, NULL, "isolation=snapshot", &_session);
         invariantWTOK(ret);
-log() << "created session: " << sessionId;
+//log() << "created session: " << sessionId;
     }
 
     WiredTigerSession::~WiredTigerSession() {
@@ -125,14 +171,12 @@ log() << "created session: " << sessionId;
 
     WiredTigerSessionCache::WiredTigerSessionCache(WiredTigerKVEngine* engine)
         : _engine(engine), _conn(engine->getConnection()),
-          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
-        _head = 0;
+          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1), _head(Tagger(0,0)) {
     }
 
     WiredTigerSessionCache::WiredTigerSessionCache(WT_CONNECTION* conn)
         : _engine(NULL), _conn(conn),
-          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1) {
-        _head = 0;
+          _sessionsOut(0), _shuttingDown(0), _highWaterMark(1), _head(Tagger(0,0)) {
     }
 
     WiredTigerSessionCache::~WiredTigerSessionCache() {
@@ -157,14 +201,16 @@ log() << "created session: " << sessionId;
         // Increment the epoch as we are now closing all sessions with this epoch
         _epoch++;
         // Grab each session from the list and delete
-        TaggedSession* cachedSession;
+        Tagger cachedSession;
         while ((cachedSession = _head.load()) != 0) {
             // Keep trying to remove the head until we succeed
-            if (_head.compare_exchange_weak(cachedSession, cachedSession->second->_next)) {
+            //Tagger* new_head = cachedSession->_next;
+            if (_head.compare_exchange_weak(cachedSession, Tagger(cachedSession->_next, cachedSession->_tag))) {
                 currSessionsInCache.fetchAndSubtract(1);
-		cachedSession->second->_tag++;
-                delete cachedSession->second;
-		delete cachedSession;
+		WiredTigerSession* session = cachedSession.get_ptr();
+		session->_tag++;
+		session->_next = 0;
+                delete session;
             }
         }
     }
@@ -183,19 +229,17 @@ log() << "created session: " << sessionId;
 
         // We are popping here, compare_exchange will try and replace the
         // current head (our session) with the next session in the queue
-        TaggedSession* cachedSession = _head.load();
-        while (cachedSession && cachedSession->second &&
-               !_head.compare_exchange_weak(cachedSession, cachedSession->second->_next)) {
+        Tagger cachedSession = _head.load();
+        while (cachedSession &&
+               !_head.compare_exchange_weak(cachedSession, Tagger(cachedSession->_next, cachedSession->_tag))) {
         }
-
-	if (cachedSession && cachedSession->second) {
+	if (cachedSession) {
+            currSessionsInCache.fetchAndSubtract(1);
             // Clear the next session for when we put it back
-            WiredTigerSession* outbound_session = cachedSession->second;
-            delete cachedSession;
+            WiredTigerSession* outbound_session = cachedSession.get_ptr();
             outbound_session->_next = 0;
             outbound_session->_tag++;
-            currSessionsInCache.fetchAndSubtract(1);
-log() << "popped session: " << outbound_session->sessionId;
+//log() << "popped session: " << outbound_session->sessionId;
             return outbound_session;
         }
 
@@ -237,11 +281,10 @@ log() << "popped session: " << outbound_session->sessionId;
         if (session->_getEpoch() == _epoch) {
             // Switch in the new head
             // Use a separate variable to Avoid GCC bug 60272
-            TaggedSession* returning_session = new TaggedSession(session->_tag, session);
-            TaggedSession* old_head;
+            Tagger returning_session(session, session->_tag);
+            Tagger old_head = _head.load();
             while (currSessionsInCache.load() < _highWaterMark.load()) {
-                old_head = _head.load();
-		returning_session->second->_next = old_head;
+		returning_session->_next = old_head.get_ptr();
 	        if (_head.compare_exchange_weak(old_head, returning_session)) {
                     returnedToCache = true;
                     currSessionsInCache.fetchAndAdd(1);
@@ -249,11 +292,11 @@ log() << "popped session: " << outbound_session->sessionId;
                 }
             }
         }
-log() << "pushed session: " << session->sessionId;
+//log() << "pushed session: " << session->sessionId;
         _sessionsOut--;
         // Do all cleanup outside of the cache partition spinlock.
         if (!returnedToCache) {
-log() << "deleted session: " << session->sessionId;
+//log() << "deleted session: " << session->sessionId;
             delete session;
         }
 

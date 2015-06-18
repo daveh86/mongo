@@ -1231,7 +1231,7 @@ if env.TargetOSIs('posix'):
         env.Append( SHLINKFLAGS=["-Wl,-z,now"] )
         env.Append( LINKFLAGS=["-rdynamic"] )
 
-    env.Append( LIBS=[] )
+    env.Append( LIBS=[ 'atomic' ] )
 
     #make scons colorgcc friendly
     for key in ('HOME', 'TERM'):
