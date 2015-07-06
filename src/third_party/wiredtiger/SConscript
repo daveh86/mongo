@@ -16,8 +16,9 @@ env.Append(CPPPATH=[
 if debugBuild:
     env.Append(CPPDEFINES=[
         "HAVE_DIAGNOSTIC",
-        "HAVE_VERBOSE",
         ])
+
+env.Append(CPPDEFINES=["HAVE_VERBOSE"])
 
 conf = Configure(env)
 if conf.CheckFunc("fallocate"):
