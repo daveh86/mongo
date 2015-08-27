@@ -218,6 +218,7 @@ public:
 private:
     class Cursor;
     class RandomCursor;
+    class RangedCursor;
 
     class CappedInsertChange;
     class NumRecordsChange;

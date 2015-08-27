@@ -371,6 +371,227 @@ private:
     OperationContext* _txn;
 };
 
+class WiredTigerRecordStore::RangedCursor final : public RecordCursor {
+public:
+    RangedCursor(OperationContext* txn,
+                 const WiredTigerRecordStore& rs,
+                 const RecordId& start = RecordId(),
+                 const RecordId& end = RecordId(),
+                 const bool forward = true)
+        : _rs(rs), _txn(txn), _start(start), _end(end), _forward(forward) {
+        _cursor.emplace(rs.getURI(), rs.tableId(), true, txn);
+        if (_start != RecordId())
+            seekExact(_start);
+    }
+
+    boost::optional<Record> next() final {
+        if (_eof)
+            return {};
+
+        WT_CURSOR* c = _cursor->get();
+
+        bool mustAdvance = true;
+        if (_lastReturnedId.isNull() && !_forward && _rs._isCapped) {
+            // In this case we need to seek to the highest visible record.
+            const RecordId reverseCappedInitialSeekPoint =
+                _readUntilForOplog.isNull() ? _rs.lowestCappedHiddenRecord() : _readUntilForOplog;
+
+            if (!reverseCappedInitialSeekPoint.isNull()) {
+                c->set_key(c, _makeKey(reverseCappedInitialSeekPoint));
+                int cmp;
+                int seekRet = WT_OP_CHECK(c->search_near(c, &cmp));
+                if (seekRet == WT_NOTFOUND) {
+                    _eof = true;
+                    return {};
+                }
+                invariantWTOK(seekRet);
+
+                // If we landed at or past the lowest hidden record, we must advance to be in
+                // the visible range.
+                mustAdvance = _rs.isCappedHidden(reverseCappedInitialSeekPoint)
+                    ? (cmp >= 0)
+                    : (cmp > 0);  // No longer hidden.
+            }
+        }
+
+        if (mustAdvance) {
+            // Nothing after the next line can throw WCEs.
+            // Note that an unpositioned (or eof) WT_CURSOR returns the first/last entry in the
+            // table when you call next/prev.
+            int advanceRet = WT_OP_CHECK(_forward ? c->next(c) : c->prev(c));
+            if (advanceRet == WT_NOTFOUND) {
+                _eof = true;
+                return {};
+            }
+            invariantWTOK(advanceRet);
+        }
+
+        int64_t key;
+        invariantWTOK(c->get_key(c, &key));
+        const RecordId id = _fromKey(key);
+
+        if (!isVisible(id)) {
+            _eof = true;
+            return {};
+        }
+
+        if (_forward) {
+            if (id > _end && _end != RecordId()) {
+                _eof = true;
+                return {};
+            }
+        } else {
+            if (id < _end && _end != RecordId()) {
+                _eof = true;
+                return {};
+            }
+        }
+
+        WT_ITEM value;
+        invariantWTOK(c->get_value(c, &value));
+
+        _lastReturnedId = id;
+        return {{id, {static_cast<const char*>(value.data), static_cast<int>(value.size)}}};
+    }
+
+    boost::optional<Record> seekExact(const RecordId& id) final {
+        // If we try to see something outside the range, then we are EOF.
+        if (_forward) {
+            if (id > _end && _end != RecordId()) {
+                _eof = true;
+                return {};
+            }
+        } else {
+            if (id < _end && _end != RecordId()) {
+                _eof = true;
+                return {};
+            }
+        }
+
+        WT_CURSOR* c = _cursor->get();
+        c->set_key(c, _makeKey(id));
+        // Nothing after the next line can throw WCEs.
+        int ret = WT_OP_CHECK(c->search(c));
+        if (ret == WT_NOTFOUND) {
+            _eof = true;
+            return {};
+        }
+        invariantWTOK(ret);
+
+        WT_ITEM value;
+        invariantWTOK(c->get_value(c, &value));
+
+        _lastReturnedId = id;
+        _eof = false;
+        return {{id, {static_cast<const char*>(value.data), static_cast<int>(value.size)}}};
+    }
+
+    void savePositioned() final {
+        try {
+            if (_cursor)
+                _cursor->reset();
+        } catch (const WriteConflictException& wce) {
+            // Ignore since this is only called when we are about to kill our transaction
+            // anyway.
+        }
+    }
+
+    void saveUnpositioned() final {
+        savePositioned();
+        _lastReturnedId = _start;
+    }
+
+    bool restore() final {
+        if (!_cursor)
+            _cursor.emplace(_rs.getURI(), _rs.tableId(), true, _txn);
+
+        // This will ensure an active session exists, so any restored cursors will bind to it
+        invariant(WiredTigerRecoveryUnit::get(_txn)->getSession(_txn) == _cursor->getSession());
+
+        // If we've hit EOF, then this iterator is done and need not be restored.
+        if (_eof)
+            return true;
+
+        if (_lastReturnedId.isNull())
+            return true;
+
+        WT_CURSOR* c = _cursor->get();
+        c->set_key(c, _makeKey(_lastReturnedId));
+
+        int cmp;
+        int ret = WT_OP_CHECK(c->search_near(c, &cmp));
+        if (ret == WT_NOTFOUND) {
+            _eof = true;
+            return !_rs._isCapped;
+        }
+        invariantWTOK(ret);
+
+        if (cmp == 0)
+            return true;  // Landed right where we left off.
+
+        if (_rs._isCapped) {
+            // Doc was deleted either by cappedDeleteAsNeeded() or cappedTruncateAfter().
+            // It is important that we error out in this case so that consumers don't
+            // silently get 'holes' when scanning capped collections. We don't make
+            // this guarantee for normal collections so it is ok to skip ahead in that case.
+            _eof = true;
+            return false;
+        }
+
+        if (_forward && cmp > 0) {
+            // We landed after where we were. Move back one so that next() will return this
+            // document.
+            ret = WT_OP_CHECK(c->prev(c));
+        } else if (!_forward && cmp < 0) {
+            // Do the opposite for reverse cursors.
+            ret = WT_OP_CHECK(c->next(c));
+        }
+        if (ret != WT_NOTFOUND)
+            invariantWTOK(ret);
+
+        return true;
+    }
+
+    void detachFromOperationContext() final {
+        _txn = nullptr;
+        _cursor = boost::none;
+    }
+
+    void reattachToOperationContext(OperationContext* txn) final {
+        _txn = txn;
+        // _cursor recreated in restore() to avoid risk of WT_ROLLBACK issues.
+    }
+
+private:
+    bool isVisible(const RecordId& id) {
+        if (!_rs._isCapped)
+            return true;
+
+        if (_readUntilForOplog.isNull() || !_rs._isOplog) {
+            // this is the normal capped case
+            return !_rs.isCappedHidden(id);
+        }
+
+        // this is for oplogs
+        if (id == _readUntilForOplog) {
+            // we allow if its been committed already
+            return !_rs.isCappedHidden(id);
+        }
+
+        return id < _readUntilForOplog;
+    }
+
+    const WiredTigerRecordStore& _rs;
+    OperationContext* _txn;
+    boost::optional<WiredTigerCursor> _cursor;
+    const RecordId _start;
+    const RecordId _end;
+    const bool _forward;
+    bool _eof = false;
+    RecordId _lastReturnedId;  // If null, need to seek to first/last record.
+    const RecordId _readUntilForOplog;
+};
+
 
 // static
 StatusWith<std::string> WiredTigerRecordStore::generateCreateString(
@@ -959,8 +1180,45 @@ std::unique_ptr<RecordCursor> WiredTigerRecordStore::getRandomCursor(OperationCo
 
 std::vector<std::unique_ptr<RecordCursor>> WiredTigerRecordStore::getManyCursors(
     OperationContext* txn) const {
-    std::vector<std::unique_ptr<RecordCursor>> cursors(1);
-    cursors[0] = stdx::make_unique<Cursor>(txn, *this, /*forward=*/true);
+    const int numCursors = 10;
+    std::vector<std::unique_ptr<RecordCursor>> cursors;
+    std::vector<RecordId> recordIds;
+
+    // Need a random seed of values
+    RandomCursor randomCursor(txn, *this);
+
+    /**
+     * Create a set of n^2 random points within the collection. If for any reason we can't get
+     * enough random
+     * points, then we should return just one cursor.
+     */
+    for (int i = 0; i < numCursors * numCursors; i++) {
+        boost::optional<Record> rec = randomCursor.next();
+        if (!rec) {
+            LOG(1) << "failed to use random cursor falling back to non-random cursor.";
+            std::vector<std::unique_ptr<RecordCursor>> failReturn(1);
+            failReturn[0] = stdx::make_unique<Cursor>(txn, *this, /*forward=*/true);
+            return failReturn;
+        }
+        recordIds.push_back(rec->id);
+    }
+
+    // Grab N of those points sorted in order
+    std::sort(recordIds.begin(), recordIds.end());
+    RecordId rangeFirst = RecordId();
+    RecordId rangeLast;
+
+    // Add the initial start to first point iterator
+    rangeLast = recordIds[numCursors - 1];
+    cursors.push_back(stdx::make_unique<RangedCursor>(txn, *this, rangeFirst, rangeLast));
+    for (int i = 2; i < numCursors; i++) {
+        rangeFirst = rangeLast;
+        rangeLast = recordIds[(i * numCursors) - 1];
+        cursors.push_back(stdx::make_unique<RangedCursor>(txn, *this, rangeFirst, rangeLast));
+    }
+    // Add a final iterator to get to the end of the collection
+    cursors.push_back(stdx::make_unique<RangedCursor>(txn, *this, rangeLast, RecordId()));
+
     return cursors;
 }
 
