@@ -156,7 +156,12 @@ function runTest(conn) {
          var testFunc = function(shouldPass) {
              var passed = true;
              try {
-                 admin.fsyncLock(); // must be locked first
+                 var ret = admin.fsyncLock(); // must be locked first
+                 // If the storage engine doesnt support fsync lock, we can't proceed
+                 if (ret.ok == 0 && ret.code == 125) {
+                    jsTestLog("Skipping fsyncUnlock test as engine does not support fsyncLock");
+                    return;
+                 }
                  var res = db.fsyncUnlock();
                  printjson(res);
                  passed = res.ok && !res.errmsg && !res.err && !res['$err'];
