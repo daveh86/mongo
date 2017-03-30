@@ -15,9 +15,8 @@ util_drop(WT_SESSION *session, int argc, char *argv[])
 {
 	WT_DECL_RET;
 	int ch;
-	char *uri;
+	char *name;
 
-	uri = NULL;
 	while ((ch = __wt_getopt(progname, argc, argv, "")) != EOF)
 		switch (ch) {
 		case '?':
@@ -31,13 +30,12 @@ util_drop(WT_SESSION *session, int argc, char *argv[])
 	/* The remaining argument is the uri. */
 	if (argc != 1)
 		return (usage());
-	if ((uri = util_uri(session, *argv, "table")) == NULL)
+	if ((name = util_name(session, *argv, "table")) == NULL)
 		return (1);
 
-	if ((ret = session->drop(session, uri, "force")) != 0)
-		(void)util_err(session, ret, "session.drop: %s", uri);
+	ret = session->drop(session, name, "force");
 
-	free(uri);
+	free(name);
 	return (ret);
 }
 

@@ -25,11 +25,11 @@ __wt_dlopen(WT_SESSION_IMPL *session, const char *path, WT_DLH **dlhp)
 
 	/* NULL means load from the current binary */
 	if (path == NULL) {
-		if (GetModuleHandleExW(
+		if (GetModuleHandleExA(
 		    0, NULL, (HMODULE *)&dlh->handle) == FALSE) {
 			windows_error = __wt_getlasterror();
 			__wt_errx(session,
-			    "GetModuleHandleExW: %s: %s",
+			    "GetModuleHandleEx: %s: %s",
 			    path, __wt_formatmessage(session, windows_error));
 			WT_ERR(__wt_map_windows_error(windows_error));
 		}

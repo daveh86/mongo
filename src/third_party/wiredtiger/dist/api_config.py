@@ -195,16 +195,13 @@ def checkstr(c):
 def get_default(c):
     t = gettype(c)
     if c.default == 'false':
-        return 'false'
-    elif c.default == 'true':
-        return 'true'
-    elif t == 'string' and c.default == 'none' and \
-        not c.flags.get('choices', []):
+        return '0'
+    elif t == 'string' and c.default == 'none':
         return ''
     elif t == 'category':
         return '(%s)' % (','.join('%s=%s' % (subc.name, get_default(subc))
             for subc in sorted(c.subconfig)))
-    elif c.default or t == 'int':
+    elif (c.default or t == 'int') and c.default != 'true':
         return str(c.default).replace('"', '\\"')
     else:
         return ''
@@ -331,7 +328,7 @@ __wt_conn_config_discard(WT_SESSION_IMPL *session)
 \t__wt_free(session, conn->config_entries);
 }
 
-/*
+/*        
  * __wt_conn_config_match --
  *      Return the static configuration entry for a method.
  */

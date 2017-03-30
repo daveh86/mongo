@@ -51,7 +51,6 @@
  */
 void
 __wt_random_init(WT_RAND_STATE volatile * rnd_state)
-    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	WT_RAND_STATE rnd;
 
@@ -67,19 +66,20 @@ __wt_random_init(WT_RAND_STATE volatile * rnd_state)
  * threads and we want each thread to initialize its own random state based
  * on a different random seed.
  */
-void
+int
 __wt_random_init_seed(
     WT_SESSION_IMPL *session, WT_RAND_STATE volatile * rnd_state)
-    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	struct timespec ts;
 	WT_RAND_STATE rnd;
 
-	__wt_epoch(session, &ts);
+	WT_RET(__wt_epoch(session, &ts));
 	M_W(rnd) = (uint32_t)(ts.tv_nsec + 521288629);
 	M_Z(rnd) = (uint32_t)(ts.tv_nsec + 362436069);
 
 	*rnd_state = rnd;
+
+	return (0);
 }
 
 /*
@@ -88,7 +88,6 @@ __wt_random_init_seed(
  */
 uint32_t
 __wt_random(WT_RAND_STATE volatile * rnd_state)
-    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	WT_RAND_STATE rnd;
 	uint32_t w, z;
@@ -119,16 +118,4 @@ __wt_random(WT_RAND_STATE volatile * rnd_state)
 	*rnd_state = rnd;
 
 	return ((z << 16) + (w & 65535));
-}
-
-/*
- * __wt_random64 --
- *	Return a 64-bit pseudo-random number.
- */
-uint64_t
-__wt_random64(WT_RAND_STATE volatile * rnd_state)
-    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
-{
-	return (((uint64_t)__wt_random(rnd_state) << 32) +
-	    __wt_random(rnd_state));
 }

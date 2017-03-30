@@ -35,6 +35,7 @@ def lines_could_join():
                     print '\t' + m.group(1).lstrip() + m.group(2)
                     print
 
+
 missing_comment()
 
 # Don't display lines that could be joined by default; in some cases, the code

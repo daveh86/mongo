@@ -81,7 +81,7 @@ __pack_init(WT_SESSION_IMPL *session, WT_PACK *pack, const char *fmt)
  * __pack_name_init --
  *      Initialize the name of a pack iterator.
  */
-static inline void
+static inline int
 __pack_name_init(WT_SESSION_IMPL *session, WT_CONFIG_ITEM *names,
     bool iskey, WT_PACK_NAME *pn)
 {
@@ -89,9 +89,11 @@ __pack_name_init(WT_SESSION_IMPL *session, WT_CONFIG_ITEM *names,
 	pn->iskey = iskey;
 
 	if (names->str != NULL)
-		__wt_config_subinit(session, &pn->config, names);
+		WT_RET(__wt_config_subinit(session, &pn->config, names));
 	else
 		pn->genname = 1;
+
+	return (0);
 }
 
 /*
@@ -168,14 +170,9 @@ next:	if (pack->cur == pack->end)
 			    (int)(pack->end - pack->orig), pack->orig);
 		return (0);
 	case 'u':
+	case 'U':
 		/* Special case for items with a size prefix. */
 		pv->type = (!pv->havesize && *pack->cur != '\0') ? 'U' : 'u';
-		return (0);
-	case 'U':
-		/*
-		 * Don't change the type. 'U' is used internally, so this type
-		 * was already changed to explicitly include the size.
-		 */
 		return (0);
 	case 'b':
 	case 'h':

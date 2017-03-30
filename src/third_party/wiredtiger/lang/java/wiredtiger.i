@@ -127,7 +127,7 @@ static void throwWiredTigerException(JNIEnv *jenv, int err) {
 
 %typemap(javain) uint64_t "$javainput"
 %typemap(javaout) uint64_t {
-	return ($jnicall);
+	return $jnicall;
 }
 
 /* Return byte[] from cursor.get_value */
@@ -137,7 +137,7 @@ static void throwWiredTigerException(JNIEnv *jenv, int err) {
 
 %typemap(javain) WT_ITEM, WT_ITEM * "$javainput"
 %typemap(javaout) WT_ITEM, WT_ITEM * {
-	return ($jnicall);
+	return $jnicall;
 }
 
 %typemap(in) WT_ITEM * (WT_ITEM item) %{
@@ -165,7 +165,7 @@ static void throwWiredTigerException(JNIEnv *jenv, int err) {
 %typemap(out) int %{
 	if ($1 != 0 && $1 != WT_NOTFOUND) {
 		throwWiredTigerException(jenv, $1);
-		return ($null);
+		return $null;
 	}
 	$result = $1;
 %}
@@ -174,7 +174,7 @@ static void throwWiredTigerException(JNIEnv *jenv, int err) {
 	if (!val) {
 		SWIG_JavaThrowException(jenv, SWIG_JavaNullPointerException,
 		#name " is null");
-		return ($null);
+		return $null;
 	}
 %enddef
 
@@ -240,6 +240,7 @@ WT_CLASS(type, class, name)
 
 %typemap(freearg, numinputs=0) class ## _CLOSED *name {
 	closeHandler(jenv, savesess2, jcb2);
+	priv = NULL;
 }
 
 %enddef
@@ -537,7 +538,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		k.data = NULL;
 		if ((ret = $self->get_key($self, &k)) != 0)
 			throwWiredTigerException(jenv, ret);
-		return (k);
+		return k;
 	}
 
 	%javamethodmodifiers get_value_wrap "protected";
@@ -547,40 +548,40 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		v.data = NULL;
 		if ((ret = $self->get_value($self, &v)) != 0)
 			throwWiredTigerException(jenv, ret);
-		return (v);
+		return v;
 	}
 
 	%javamethodmodifiers insert_wrap "protected";
 	int insert_wrap(WT_ITEM *k, WT_ITEM *v) {
 		$self->set_key($self, k);
 		$self->set_value($self, v);
-		return ($self->insert($self));
+		return $self->insert($self);
 	}
 
 	%javamethodmodifiers remove_wrap "protected";
 	int remove_wrap(WT_ITEM *k) {
 		$self->set_key($self, k);
-		return ($self->remove($self));
+		return $self->remove($self);
 	}
 
 	%javamethodmodifiers search_wrap "protected";
 	int search_wrap(WT_ITEM *k) {
 		$self->set_key($self, k);
-		return ($self->search($self));
+		return $self->search($self);
 	}
 
 	%javamethodmodifiers update_wrap "protected";
 	int update_wrap(WT_ITEM *k, WT_ITEM *v) {
 		$self->set_key($self, k);
 		$self->set_value($self, v);
-		return ($self->update($self));
+		return $self->update($self);
 	}
 
 	%javamethodmodifiers _java_raw "protected";
 	bool _java_raw(JNIEnv *jenv) {
 		(void)jenv;
 		JAVA_CALLBACK *jcb = (JAVA_CALLBACK *)$self->c.lang_private;
-		return (jcb->cursor_raw);
+		return jcb->cursor_raw;
 	}
 
 	%javamethodmodifiers _java_init "protected";
@@ -597,7 +598,6 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 %typemap(javabody) struct __wt_async_op %{
  private long swigCPtr;
  protected boolean swigCMemOwn;
- protected boolean javaRaw;
  protected String keyFormat;
  protected String valueFormat;
  protected PackOutputStream keyPacker;
@@ -610,14 +610,13 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
    swigCPtr = cPtr;
    keyFormat = getKey_format();
    valueFormat = getValue_format();
-   javaRaw = _java_raw();
-   keyPacker = new PackOutputStream(keyFormat, javaRaw);
-   valuePacker = new PackOutputStream(valueFormat, javaRaw);
+   keyPacker = new PackOutputStream(keyFormat);
+   valuePacker = new PackOutputStream(valueFormat);
    wiredtigerJNI.AsyncOp__java_init(swigCPtr, this, this);
  }
 
  protected static long getCPtr($javaclassname obj) {
-	 return ((obj == null) ? 0 : obj.swigCPtr);
+   return (obj == null) ? 0 : obj.swigCPtr;
  }
 %}
 
@@ -1100,7 +1099,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		if (keyUnpacker == null)
 			keyUnpacker =
 			    new PackInputStream(keyFormat, get_key_wrap(),
-			    javaRaw);
+			    _java_raw());
 		return keyUnpacker;
 	}
 
@@ -1114,7 +1113,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		if (valueUnpacker == null)
 			valueUnpacker =
 			    new PackInputStream(valueFormat, get_value_wrap(),
-			    javaRaw);
+			    _java_raw());
 		return valueUnpacker;
 	}
 
@@ -1129,7 +1128,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		k.data = NULL;
 		if ((ret = $self->get_key($self, &k)) != 0)
 			throwWiredTigerException(jenv, ret);
-		return (k);
+		return k;
 	}
 
 	%javamethodmodifiers get_value_wrap "protected";
@@ -1139,20 +1138,20 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		v.data = NULL;
 		if ((ret = $self->get_value($self, &v)) != 0)
 			throwWiredTigerException(jenv, ret);
-		return (v);
+		return v;
 	}
 
 	%javamethodmodifiers insert_wrap "protected";
 	int insert_wrap(WT_ITEM *k, WT_ITEM *v) {
 		$self->set_key($self, k);
 		$self->set_value($self, v);
-		return ($self->insert($self));
+		return $self->insert($self);
 	}
 
 	%javamethodmodifiers remove_wrap "protected";
 	int remove_wrap(WT_ITEM *k) {
 		$self->set_key($self, k);
-		return ($self->remove($self));
+		return $self->remove($self);
 	}
 
 	%javamethodmodifiers reset_wrap "protected";
@@ -1163,7 +1162,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 	%javamethodmodifiers search_wrap "protected";
 	int search_wrap(WT_ITEM *k) {
 		$self->set_key($self, k);
-		return ($self->search($self));
+		return $self->search($self);
 	}
 
 	%javamethodmodifiers search_near_wrap "protected";
@@ -1183,7 +1182,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 	int update_wrap(WT_ITEM *k, WT_ITEM *v) {
 		$self->set_key($self, k);
 		$self->set_value($self, v);
-		return ($self->update($self));
+		return $self->update($self);
 	}
 
 	%javamethodmodifiers compare_wrap "protected";
@@ -1191,7 +1190,7 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		int cmp, ret = $self->compare($self, other, &cmp);
 		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return (cmp);
+		return cmp;
 	}
 
 	%javamethodmodifiers equals_wrap "protected";
@@ -1199,14 +1198,14 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
 		int cmp, ret = $self->equals($self, other, &cmp);
 		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return (cmp);
+		return cmp;
 	}
 
 	%javamethodmodifiers _java_raw "protected";
 	bool _java_raw(JNIEnv *jenv) {
 		(void)jenv;
 		JAVA_CALLBACK *jcb = (JAVA_CALLBACK *)$self->lang_private;
-		return (jcb->cursor_raw);
+		return jcb->cursor_raw;
 	}
 
 	%javamethodmodifiers _java_init "protected";
@@ -1234,8 +1233,8 @@ WT_ASYNC_CALLBACK javaApiAsyncHandler = {javaAsyncHandler};
    swigCPtr = cPtr;
    keyFormat = getKey_format();
    valueFormat = getValue_format();
-   keyPacker = new PackOutputStream(keyFormat, _java_raw());
-   valuePacker = new PackOutputStream(valueFormat, _java_raw());
+   keyPacker = new PackOutputStream(keyFormat);
+   valuePacker = new PackOutputStream(valueFormat);
    wiredtigerJNI.Cursor__java_init(swigCPtr, this, this);
  }
 
@@ -1955,7 +1954,7 @@ WT_CONNECTION *wiredtiger_open_wrap(JNIEnv *jenv, const char *home, const char *
 
 err:	if (ret != 0)
 		throwWiredTigerException(jenv, ret);
-	return (conn);
+	return conn;
 }
 }
 
@@ -1985,7 +1984,7 @@ err:	if (ret != 0)
 
 err:		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return (asyncop);
+		return asyncop;
 	}
 }
 
@@ -2009,7 +2008,7 @@ err:		if (ret != 0)
 
 err:		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return (session);
+		return session;
 	}
 }
 
@@ -2037,14 +2036,14 @@ err:		if (ret != 0)
 
 err:		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return (cursor);
+		return cursor;
 	}
 }
 
 %extend __wt_async_op {
 	long get_id_wrap(JNIEnv *jenv) {
 		WT_UNUSED(jenv);
-		return ((long)self->get_id(self));
+		return (self->get_id(self));
 	}
 }
 
@@ -2055,6 +2054,6 @@ err:		if (ret != 0)
 		ret = self->transaction_pinned_range(self, &range);
 		if (ret != 0)
 			throwWiredTigerException(jenv, ret);
-		return ((long)range);
+		return range;
 	}
 }

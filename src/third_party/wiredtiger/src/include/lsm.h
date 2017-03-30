@@ -31,17 +31,6 @@ struct __wt_lsm_worker_args {
 };
 
 /*
- * WT_LSM_CURSOR_CHUNK --
- *	Iterator struct containing all the LSM cursor access points for a chunk.
- */
-struct __wt_lsm_cursor_chunk {
-	WT_BLOOM *bloom;		/* Bloom filter handle for each chunk.*/
-	WT_CURSOR *cursor;		/* Cursor handle for each chunk. */
-	uint64_t count;			/* Number of items in chunk */
-	uint64_t switch_txn;		/* Switch txn for each chunk */
-};
-
-/*
  * WT_CURSOR_LSM --
  *	An LSM cursor.
  */
@@ -54,12 +43,17 @@ struct __wt_cursor_lsm {
 	u_int nchunks;			/* Number of chunks in the cursor */
 	u_int nupdates;			/* Updates needed (including
 					   snapshot isolation checks). */
-	WT_CURSOR *current;		/* The current cursor for iteration */
+	WT_BLOOM **blooms;		/* Bloom filter handles. */
+	size_t bloom_alloc;
+
+	WT_CURSOR **cursors;		/* Cursor handles. */
+	size_t cursor_alloc;
+
+	WT_CURSOR *current;     	/* The current cursor for iteration */
 	WT_LSM_CHUNK *primary_chunk;	/* The current primary chunk */
 
-	WT_LSM_CURSOR_CHUNK **chunks;	/* Array of LSM cursor units */
-	size_t chunks_alloc;		/* Current size iterators array */
-	size_t chunks_count;		/* Current number of iterators */
+	uint64_t *switch_txn;		/* Switch txn for each chunk */
+	size_t txnid_alloc;
 
 	u_int update_count;		/* Updates performed. */
 
@@ -189,7 +183,7 @@ struct __wt_lsm_tree {
 
 #define	LSM_TREE_MAX_QUEUE	100
 	uint32_t queue_ref;
-	WT_RWLOCK rwlock;
+	WT_RWLOCK *rwlock;
 	TAILQ_ENTRY(__wt_lsm_tree) q;
 
 	uint64_t dsk_gen;
@@ -234,11 +228,11 @@ struct __wt_lsm_tree {
 	 * area, copying them into place when a statistics cursor is created.
 	 */
 #define	WT_LSM_TREE_STAT_INCR(session, fld) do {			\
-	if (WT_STAT_ENABLED(session))	\
+	if (FLD_ISSET(S2C(session)->stat_flags, WT_CONN_STAT_FAST))	\
 		++(fld);						\
 } while (0)
 #define	WT_LSM_TREE_STAT_INCRV(session, fld, v) do {			\
-	if (WT_STAT_ENABLED(session))	\
+	if (FLD_ISSET(S2C(session)->stat_flags, WT_CONN_STAT_FAST))	\
 		(fld) += (int64_t)(v);					\
 } while (0)
 	int64_t bloom_false_positive;
@@ -249,21 +243,17 @@ struct __wt_lsm_tree {
 	int64_t lsm_merge_throttle;
 
 	/*
-	 * Following fields used to be flags but are susceptible to races.
-	 * Don't merge them with flags.
+	 * The tree is open for business. This used to be a flag, but it is
+	 * susceptible to races.
 	 */
-	bool active;			/* The tree is open for business */
-	bool aggressive_timer_enabled;	/* Timer for merge aggression enabled */
-	bool need_switch;		/* New chunk needs creating */
+	bool active;
 
-	/*
-	 * flags here are not protected for concurrent access, don't put
-	 * anything here that is susceptible to races.
-	 */
-#define	WT_LSM_TREE_COMPACTING		0x01	/* Tree being compacted */
-#define	WT_LSM_TREE_MERGES		0x02	/* Tree should run merges */
-#define	WT_LSM_TREE_OPEN		0x04	/* The tree is open */
-#define	WT_LSM_TREE_THROTTLE		0x08	/* Throttle updates */
+#define	WT_LSM_TREE_AGGRESSIVE_TIMER	0x01	/* Timer for merge aggression */
+#define	WT_LSM_TREE_COMPACTING		0x02	/* Tree being compacted */
+#define	WT_LSM_TREE_MERGES		0x04	/* Tree should run merges */
+#define	WT_LSM_TREE_NEED_SWITCH		0x08	/* New chunk needs creating */
+#define	WT_LSM_TREE_OPEN		0x10	/* The tree is open */
+#define	WT_LSM_TREE_THROTTLE		0x20	/* Throttle updates */
 	uint32_t flags;
 };
 

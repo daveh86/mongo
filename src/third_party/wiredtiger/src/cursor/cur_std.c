@@ -50,7 +50,7 @@ __wt_cursor_get_value_notsup(WT_CURSOR *cursor, ...)
 void
 __wt_cursor_set_key_notsup(WT_CURSOR *cursor, ...)
 {
-	WT_IGNORE_RET(__wt_cursor_notsup(cursor));
+	(void)__wt_cursor_notsup(cursor);
 }
 
 /*
@@ -60,7 +60,7 @@ __wt_cursor_set_key_notsup(WT_CURSOR *cursor, ...)
 void
 __wt_cursor_set_value_notsup(WT_CURSOR *cursor, ...)
 {
-	WT_IGNORE_RET(__wt_cursor_notsup(cursor));
+	(void)__wt_cursor_notsup(cursor);
 }
 
 /*
@@ -144,7 +144,6 @@ __wt_cursor_set_notsup(WT_CURSOR *cursor)
  */
 int
 __wt_cursor_kv_not_set(WT_CURSOR *cursor, bool key)
-    WT_GCC_FUNC_ATTRIBUTE((cold))
 {
 	WT_SESSION_IMPL *session;
 
@@ -540,6 +539,7 @@ err:		cursor->saved_err = ret;
 int
 __wt_cursor_close(WT_CURSOR *cursor)
 {
+	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
 
 	session = (WT_SESSION_IMPL *)cursor->session;
@@ -548,7 +548,7 @@ __wt_cursor_close(WT_CURSOR *cursor)
 		TAILQ_REMOVE(&session->cursors, cursor, q);
 
 		(void)__wt_atomic_sub32(&S2C(session)->open_cursor_count, 1);
-		WT_STAT_DATA_DECR(session, session_cursor_open);
+		WT_STAT_FAST_DATA_DECR(session, session_cursor_open);
 	}
 
 	__wt_buf_free(session, &cursor->key);
@@ -557,7 +557,7 @@ __wt_cursor_close(WT_CURSOR *cursor)
 	__wt_free(session, cursor->internal_uri);
 	__wt_free(session, cursor->uri);
 	__wt_overwrite_and_free(session, cursor);
-	return (0);
+	return (ret);
 }
 
 /*
@@ -633,7 +633,6 @@ __wt_cursor_reconfigure(WT_CURSOR *cursor, const char *config)
 int
 __wt_cursor_dup_position(WT_CURSOR *to_dup, WT_CURSOR *cursor)
 {
-	WT_DECL_RET;
 	WT_ITEM key;
 
 	/*
@@ -663,11 +662,9 @@ __wt_cursor_dup_position(WT_CURSOR *to_dup, WT_CURSOR *cursor)
 	 * cursors cannot reference application memory after cursor operations
 	 * and that requirement will save the day.
 	 */
-	F_SET(cursor, WT_CURSTD_RAW_SEARCH);
-	ret = cursor->search(cursor);
-	F_CLR(cursor, WT_CURSTD_RAW_SEARCH);
+	WT_RET(cursor->search(cursor));
 
-	return (ret);
+	return (0);
 }
 
 /*
@@ -767,7 +764,7 @@ __wt_cursor_init(WT_CURSOR *cursor,
 
 	F_SET(cursor, WT_CURSTD_OPEN);
 	(void)__wt_atomic_add32(&S2C(session)->open_cursor_count, 1);
-	WT_STAT_DATA_INCR(session, session_cursor_open);
+	WT_STAT_FAST_DATA_INCR(session, session_cursor_open);
 
 	*cursorp = (cdump != NULL) ? cdump : cursor;
 	return (0);

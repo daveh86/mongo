@@ -159,11 +159,10 @@ union __wt_lsn {
     !FLD64_ISSET((uint64_t)(state), WT_LOG_SLOT_CLOSE) &&		\
     WT_LOG_SLOT_JOINED(state) < WT_LOG_SLOT_BUF_MAX)
 
-struct __wt_logslot {
-	WT_CACHE_LINE_PAD_BEGIN
+struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_logslot {
 	volatile int64_t slot_state;	/* Slot state */
 	int64_t	 slot_unbuffered;	/* Unbuffered data in this slot */
-	int	 slot_error;		/* Error value */
+	int32_t	 slot_error;		/* Error value */
 	wt_off_t slot_start_offset;	/* Starting file offset */
 	wt_off_t slot_last_offset;	/* Last record offset */
 	WT_LSN	 slot_release_lsn;	/* Slot release LSN */
@@ -177,14 +176,13 @@ struct __wt_logslot {
 #define	WT_SLOT_SYNC		0x04		/* Needs sync on release */
 #define	WT_SLOT_SYNC_DIR	0x08		/* Directory sync on release */
 	uint32_t flags;			/* Flags */
-	WT_CACHE_LINE_PAD_END
 };
 
 #define	WT_SLOT_INIT_FLAGS	0
 
-#define	WT_WITH_SLOT_LOCK(session, log, op) do {			\
+#define	WT_WITH_SLOT_LOCK(session, log, ret, op) do {			\
 	WT_ASSERT(session, !F_ISSET(session, WT_SESSION_LOCKED_SLOT));	\
-	WT_WITH_LOCK_WAIT(session,					\
+	WT_WITH_LOCK(session, ret,					\
 	    &log->log_slot_lock, WT_SESSION_LOCKED_SLOT, op);		\
 } while (0)
 
@@ -235,7 +233,7 @@ struct __wt_log {
 	WT_SPINLOCK      log_sync_lock; /* Locked: Single-thread fsync */
 	WT_SPINLOCK      log_writelsn_lock; /* Locked: write LSN */
 
-	WT_RWLOCK	 log_archive_lock;/* Archive and log cursors */
+	WT_RWLOCK	 *log_archive_lock;	/* Archive and log cursors */
 
 	/* Notify any waiting threads when sync_lsn is updated. */
 	WT_CONDVAR	*log_sync_cond;
@@ -254,14 +252,11 @@ struct __wt_log {
 #define	WT_SLOT_POOL	128
 	WT_LOGSLOT	*active_slot;			/* Active slot */
 	WT_LOGSLOT	 slot_pool[WT_SLOT_POOL];	/* Pool of all slots */
-	int32_t		 pool_index;		/* Index into slot pool */
 	size_t		 slot_buf_size;		/* Buffer size for slots */
 #ifdef HAVE_DIAGNOSTIC
 	uint64_t	 write_calls;		/* Calls to log_write */
 #endif
-
-#define	WT_LOG_OPENED		0x01	/* Log subsystem successfully open */
-#define	WT_LOG_TRUNCATE_NOTSUP	0x02	/* File system truncate not supported */
+#define	WT_LOG_OPENED	0x01		/* Log subsystem successfully open */
 	uint32_t	flags;
 };
 

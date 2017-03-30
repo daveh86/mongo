@@ -25,11 +25,12 @@ __wt_connection_open(WT_CONNECTION_IMPL *conn, const char *cfg[])
 	 * Tell internal server threads to run: this must be set before opening
 	 * any sessions.
 	 */
-	F_SET(conn, WT_CONN_SERVER_RUN);
+	F_SET(conn, WT_CONN_SERVER_RUN | WT_CONN_LOG_SERVER_RUN);
 
 	/* WT_SESSION_IMPL array. */
 	WT_RET(__wt_calloc(session,
 	    conn->session_size, sizeof(WT_SESSION_IMPL), &conn->sessions));
+	WT_CACHE_LINE_ALIGNMENT_VERIFY(session, conn->sessions);
 
 	/*
 	 * Open the default session.  We open this before starting service
@@ -94,18 +95,13 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	for (;;) {
 		WT_TRET(__wt_txn_update_oldest(session,
 		    WT_TXN_OLDEST_STRICT | WT_TXN_OLDEST_WAIT));
-		if (txn_global->oldest_id == txn_global->current &&
-		    txn_global->metadata_pinned == txn_global->current)
+		if (txn_global->oldest_id == txn_global->current)
 			break;
 		__wt_yield();
 	}
 
-	/*
-	 * Clear any pending async operations and shut down the async worker
-	 * threads and system before closing LSM.
-	 */
+	/* Clear any pending async ops. */
 	WT_TRET(__wt_async_flush(session));
-	WT_TRET(__wt_async_destroy(session));
 
 	/*
 	 * Shut down server threads other than the eviction server, which is
@@ -114,14 +110,14 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	 * exit before files are closed.
 	 */
 	F_CLR(conn, WT_CONN_SERVER_RUN);
+	WT_TRET(__wt_async_destroy(session));
 	WT_TRET(__wt_lsm_manager_destroy(session));
-
-	F_SET(conn, WT_CONN_CLOSING);
-	WT_TRET(__wt_checkpoint_server_destroy(session));
-	WT_TRET(__wt_statlog_destroy(session, true));
 	WT_TRET(__wt_sweep_destroy(session));
 
-	/* The eviction server is shut down last. */
+	F_SET(conn, WT_CONN_CLOSING);
+
+	WT_TRET(__wt_checkpoint_server_destroy(session));
+	WT_TRET(__wt_statlog_destroy(session, true));
 	WT_TRET(__wt_evict_destroy(session));
 
 	/* Shut down the lookaside table, after all eviction is complete. */
@@ -130,7 +126,7 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	/* Close open data handles. */
 	WT_TRET(__wt_conn_dhandle_discard(session));
 
-	/* Shut down metadata tracking. */
+	/* Shut down metadata tracking, required before creating tables. */
 	WT_TRET(__wt_meta_track_destroy(session));
 
 	/*
@@ -144,6 +140,7 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	    FLD_ISSET(conn->log_flags, WT_CONN_LOG_RECOVER_DONE))
 		WT_TRET(__wt_txn_checkpoint_log(
 		    session, true, WT_TXN_LOG_CKPT_STOP, NULL));
+	F_CLR(conn, WT_CONN_LOG_SERVER_RUN);
 	WT_TRET(__wt_logmgr_destroy(session));
 
 	/* Free memory for collators, compressors, data sources. */
@@ -160,7 +157,16 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	WT_TRET(__wt_cache_destroy(session));
 
 	/* Discard transaction state. */
-	__wt_txn_global_destroy(session);
+	WT_TRET(__wt_txn_global_destroy(session));
+
+	/* Close extensions, first calling any unload entry point. */
+	while ((dlh = TAILQ_FIRST(&conn->dlhqh)) != NULL) {
+		TAILQ_REMOVE(&conn->dlhqh, dlh, q);
+
+		if (dlh->terminate != NULL)
+			WT_TRET(dlh->terminate(wt_conn));
+		WT_TRET(__wt_dlclose(session, dlh));
+	}
 
 	/* Close the lock file, opening up the database to other connections. */
 	if (conn->lock_fh != NULL)
@@ -180,35 +186,30 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	}
 
 	/*
-	 * The session split stash, hazard information and handle arrays aren't
-	 * discarded during normal session close, they persist past the life of
-	 * the session. Discard them now.
+	 * The session's split stash isn't discarded during normal session close
+	 * because it may persist past the life of the session.  Discard it now.
 	 */
-	if (!F_ISSET(conn, WT_CONN_LEAK_MEMORY))
-		if ((s = conn->sessions) != NULL)
-			for (i = 0; i < conn->session_size; ++s, ++i) {
-				__wt_free(session, s->dhhash);
-				__wt_free(session, s->tablehash);
-				__wt_split_stash_discard_all(session, s);
-				__wt_free(session, s->hazard);
-			}
+	if ((s = conn->sessions) != NULL)
+		for (i = 0; i < conn->session_size; ++s, ++i)
+			__wt_split_stash_discard_all(session, s);
 
-	/* Destroy the file-system configuration. */
-	if (conn->file_system != NULL && conn->file_system->terminate != NULL)
-		WT_TRET(conn->file_system->terminate(
-		    conn->file_system, (WT_SESSION *)session));
-
-	/* Close extensions, first calling any unload entry point. */
-	while ((dlh = TAILQ_FIRST(&conn->dlhqh)) != NULL) {
-		TAILQ_REMOVE(&conn->dlhqh, dlh, q);
-
-		if (dlh->terminate != NULL)
-			WT_TRET(dlh->terminate(wt_conn));
-		WT_TRET(__wt_dlclose(session, dlh));
-	}
+	/*
+	 * The session's hazard pointer memory isn't discarded during normal
+	 * session close because access to it isn't serialized.  Discard it
+	 * now.
+	 */
+	if ((s = conn->sessions) != NULL)
+		for (i = 0; i < conn->session_size; ++s, ++i) {
+			/*
+			 * If hash arrays were allocated, free them now.
+			 */
+			__wt_free(session, s->dhhash);
+			__wt_free(session, s->tablehash);
+			__wt_free(session, s->hazard);
+		}
 
 	/* Destroy the handle. */
-	__wt_connection_destroy(conn);
+	WT_TRET(__wt_connection_destroy(conn));
 
 	return (ret);
 }

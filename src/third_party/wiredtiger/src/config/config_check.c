@@ -91,9 +91,9 @@ config_check(WT_SESSION_IMPL *session,
 	 * that are not nul-terminated.
 	 */
 	if (config_len == 0)
-		__wt_config_init(session, &parser, config);
+		WT_RET(__wt_config_init(session, &parser, config));
 	else
-		__wt_config_initn(session, &parser, config, config_len);
+		WT_RET(__wt_config_initn(session, &parser, config, config_len));
 	while ((ret = __wt_config_next(&parser, &k, &v)) == 0) {
 		if (k.type != WT_CONFIG_ITEM_STRING &&
 		    k.type != WT_CONFIG_ITEM_ID)
@@ -128,7 +128,8 @@ config_check(WT_SESSION_IMPL *session,
 			badtype = false;
 		} else
 			WT_RET_MSG(session, EINVAL,
-			    "unknown configuration type: '%s'", checks[i].type);
+			    "unknown configuration type: '%s'",
+			    checks[i].type);
 
 		if (badtype)
 			WT_RET_MSG(session, EINVAL,
@@ -142,7 +143,7 @@ config_check(WT_SESSION_IMPL *session,
 			continue;
 
 		/* Setup an iterator for the check string. */
-		__wt_config_init(session, &cparser, checks[i].checks);
+		WT_RET(__wt_config_init(session, &cparser, checks[i].checks));
 		while ((ret = __wt_config_next(&cparser, &ck, &cv)) == 0) {
 			if (WT_STRING_MATCH("min", ck.str, ck.len)) {
 				if (v.val < cv.val)
@@ -168,8 +169,8 @@ config_check(WT_SESSION_IMPL *session,
 					 * Handle the 'verbose' case of a list
 					 * containing restricted choices.
 					 */
-					__wt_config_subinit(
-					    session, &sparser, &v);
+					WT_RET(__wt_config_subinit(session,
+					    &sparser, &v));
 					found = true;
 					while (found &&
 					    (ret = __wt_config_next(&sparser,

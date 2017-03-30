@@ -12,11 +12,11 @@
  * __wt_epoch --
  *	Return the time since the Epoch.
  */
-void
+int
 __wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
 {
-	FILETIME time;
 	uint64_t ns100;
+	FILETIME time;
 
 	WT_UNUSED(session);
 
@@ -26,6 +26,8 @@ __wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
 	    - 116444736000000000LL;
 	tsp->tv_sec = ns100 / 10000000;
 	tsp->tv_nsec = (long)((ns100 % 10000000) * 100);
+
+	return (0);
 }
 
 /*

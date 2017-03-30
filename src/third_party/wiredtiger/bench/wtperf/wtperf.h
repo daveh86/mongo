@@ -36,14 +36,14 @@
 
 #include "config_opt.h"
 
-typedef struct __wtperf WTPERF;
-typedef struct __wtperf_thread WTPERF_THREAD;
+typedef struct __config CONFIG;
+typedef struct __config_thread CONFIG_THREAD;
 typedef struct __truncate_queue_entry TRUNCATE_QUEUE_ENTRY;
 
 #define	EXT_PFX	",extensions=("
 #define	EXT_SFX	")"
 #define	EXTPATH "../../ext/compressors/"		/* Extensions path */
-#define	BLKCMP_PFX	"block_compressor="
+#define	BLKCMP_PFX	",block_compressor="
 
 #define	LZ4_BLK BLKCMP_PFX "lz4"
 #define	LZ4_EXT							\
@@ -54,9 +54,6 @@ typedef struct __truncate_queue_entry TRUNCATE_QUEUE_ENTRY;
 #define	ZLIB_BLK BLKCMP_PFX "zlib"
 #define	ZLIB_EXT							\
 	EXT_PFX EXTPATH "zlib/.libs/libwiredtiger_zlib.so" EXT_SFX
-#define	ZSTD_BLK BLKCMP_PFX "zstd"
-#define	ZSTD_EXT							\
-	EXT_PFX EXTPATH "zstd/.libs/libwiredtiger_zstd.so" EXT_SFX
 
 typedef struct {
 	int64_t threads;		/* Thread count */
@@ -66,9 +63,6 @@ typedef struct {
 	uint64_t throttle;		/* Maximum operations/second */
 		/* Number of operations per transaction. Zero for autocommit */
 	int64_t ops_per_txn;
-	int64_t pause;			/* Time between scans */
-	int64_t read_range;		/* Range of reads */
-	int32_t table_index;		/* Table to focus ops on */
 	int64_t truncate;		/* Truncate ratio */
 	uint64_t truncate_pct;		/* Truncate Percent */
 	uint64_t truncate_count;	/* Truncate Count */
@@ -101,6 +95,12 @@ struct __truncate_queue_entry {
 	TAILQ_ENTRY(__truncate_queue_entry) q;
 };
 
+struct __config_queue_entry {
+	char *string;
+	TAILQ_ENTRY(__config_queue_entry) c;
+};
+typedef struct __config_queue_entry CONFIG_QUEUE_ENTRY;
+
 /* Steering for the throttle configuration */
 typedef struct {
 	struct timespec last_increment;	/* Time that we last added more ops */
@@ -111,35 +111,39 @@ typedef struct {
 
 #define	LOG_PARTIAL_CONFIG	",log=(enabled=false)"
 #define	READONLY_CONFIG		",readonly=true"
-struct __wtperf {			/* Per-database structure */
-	char *home;			/* WiredTiger home */
-	char *monitor_dir;		/* Monitor output dir */
+/*
+ * NOTE:  If you add any fields to this structure here, you must also add
+ * an initialization in wtperf.c in the default_cfg.
+ */
+struct __config {			/* Configuration structure */
+	const char *home;		/* WiredTiger home */
+	const char *monitor_dir;	/* Monitor output dir */
 	char *partial_config;		/* Config string for partial logging */
 	char *reopen_config;		/* Config string for conn reopen */
-	char *log_table_uri;            /* URI for log table */
-	char **uris;			/* URIs */
+	char *base_uri;			/* Object URI */
+	char **uris;			/* URIs if multiple tables */
 
 	WT_CONNECTION *conn;		/* Database connection */
 
 	FILE *logf;			/* Logging handle */
 
-	char	*async_config;		/* Config string for async */
-	bool	 use_asyncops;		/* Use async operations */
+	char *async_config;		/* Config string for async */
 
 	const char *compress_ext;	/* Compression extension for conn */
 	const char *compress_table;	/* Compression arg to table create */
 
-	WTPERF_THREAD *ckptthreads;	/* Checkpoint threads */
-	WTPERF_THREAD *popthreads;	/* Populate threads */
+	CONFIG_THREAD *ckptthreads, *popthreads;
 
 #define	WORKLOAD_MAX	50
-	WTPERF_THREAD	*workers;	/* Worker threads */
+	CONFIG_THREAD	*workers;	/* Worker threads */
 	u_int		 workers_cnt;
 
 	WORKLOAD	*workload;	/* Workloads */
 	u_int		 workload_cnt;
 
+	uint32_t	 use_asyncops;	/* Use async operations */
 	/* State tracking variables. */
+
 	uint64_t ckpt_ops;		/* checkpoint operations */
 	uint64_t insert_ops;		/* insert operations */
 	uint64_t read_ops;		/* read operations */
@@ -147,12 +151,11 @@ struct __wtperf {			/* Per-database structure */
 	uint64_t update_ops;		/* update operations */
 
 	uint64_t insert_key;		/* insert key */
-	uint64_t log_like_table_key;	/* used to allocate IDs for log table */
 
-	volatile bool ckpt;		/* checkpoint in progress */
-	volatile bool error;		/* thread error */
-	volatile bool stop;		/* notify threads to stop */
-	volatile bool in_warmup;	/* running warmup phase */
+	volatile int ckpt;		/* checkpoint in progress */
+	volatile int error;		/* thread error */
+	volatile int stop;		/* notify threads to stop */
+	volatile int in_warmup;		/* Running warmup phase */
 
 	volatile bool idle_cycle_run;	/* Signal for idle cycle thread */
 
@@ -166,7 +169,13 @@ struct __wtperf {			/* Per-database structure */
 	/* Queue head for use with the Truncate Logic */
 	TAILQ_HEAD(__truncate_qh, __truncate_queue_entry) stone_head;
 
-	CONFIG_OPTS *opts;		/* Global configuration */
+	/* Queue head to save a copy of the config to be output */
+	TAILQ_HEAD(__config_qh, __config_queue_entry) config_head;
+
+	/* Fields changeable on command line are listed in wtperf_opt.i */
+#define	OPT_DECLARE_STRUCT
+#include "wtperf_opt.i"
+#undef OPT_DECLARE_STRUCT
 };
 
 #define	ELEMENTS(a)	(sizeof(a) / sizeof(a[0]))
@@ -226,9 +235,8 @@ typedef struct {
 	uint32_t sec[100];		/* < 1s 2s ... 100s */
 } TRACK;
 
-struct __wtperf_thread {		/* Per-thread structure */
-	WTPERF *wtperf;			/* Enclosing configuration */
-	WT_CURSOR *rand_cursor;		/* Random key cursor */
+struct __config_thread {		/* Per-thread structure */
+	CONFIG *cfg;			/* Enclosing configuration */
 
 	WT_RAND_STATE rnd;		/* Random number generation state */
 
@@ -250,45 +258,50 @@ struct __wtperf_thread {		/* Per-thread structure */
 	TRACK truncate_sleep;		/* Truncate sleep operations */
 };
 
-void	 cleanup_truncate_config(WTPERF *);
-int	 config_opt_file(WTPERF *, const char *);
-void	 config_opt_cleanup(CONFIG_OPTS *);
-void	 config_opt_init(CONFIG_OPTS **);
-void	 config_opt_log(CONFIG_OPTS *, const char *);
-int	 config_opt_name_value(WTPERF *, const char *, const char *);
-void	 config_opt_print(WTPERF *);
-int	 config_opt_str(WTPERF *, const char *);
-void	 config_opt_usage(void);
-int	 config_sanity(WTPERF *);
-void	 latency_insert(WTPERF *, uint32_t *, uint32_t *, uint32_t *);
-void	 latency_print(WTPERF *);
-void	 latency_read(WTPERF *, uint32_t *, uint32_t *, uint32_t *);
-void	 latency_update(WTPERF *, uint32_t *, uint32_t *, uint32_t *);
+void	 cleanup_truncate_config(CONFIG *);
+int	 config_assign(CONFIG *, const CONFIG *);
+int	 config_compress(CONFIG *);
+void	 config_free(CONFIG *);
+int	 config_opt_file(CONFIG *, const char *);
+int	 config_opt_line(CONFIG *, const char *);
+int	 config_opt_str(CONFIG *, const char *, const char *);
+void	 config_to_file(CONFIG *);
+void	 config_consolidate(CONFIG *);
+void	 config_print(CONFIG *);
+int	 config_sanity(CONFIG *);
+void	 latency_insert(CONFIG *, uint32_t *, uint32_t *, uint32_t *);
+void	 latency_read(CONFIG *, uint32_t *, uint32_t *, uint32_t *);
+void	 latency_update(CONFIG *, uint32_t *, uint32_t *, uint32_t *);
+void	 latency_print(CONFIG *);
 int	 run_truncate(
-	    WTPERF *, WTPERF_THREAD *, WT_CURSOR *, WT_SESSION *, int *);
-int	 setup_log_file(WTPERF *);
-void	 setup_throttle(WTPERF_THREAD *);
-int	 setup_truncate(WTPERF *, WTPERF_THREAD *, WT_SESSION *);
-int	 start_idle_table_cycle(WTPERF *, pthread_t *);
-int	 stop_idle_table_cycle(WTPERF *, pthread_t);
-void	 worker_throttle(WTPERF_THREAD *);
-uint64_t sum_ckpt_ops(WTPERF *);
-uint64_t sum_insert_ops(WTPERF *);
-uint64_t sum_pop_ops(WTPERF *);
-uint64_t sum_read_ops(WTPERF *);
-uint64_t sum_truncate_ops(WTPERF *);
-uint64_t sum_update_ops(WTPERF *);
+    CONFIG *, CONFIG_THREAD *, WT_CURSOR *, WT_SESSION *, int *);
+int	 setup_log_file(CONFIG *);
+void	 setup_throttle(CONFIG_THREAD*);
+int	 setup_truncate(CONFIG *, CONFIG_THREAD *, WT_SESSION *);
+int	 start_idle_table_cycle(CONFIG *, pthread_t *);
+int	 stop_idle_table_cycle(CONFIG *, pthread_t);
+uint64_t sum_ckpt_ops(CONFIG *);
+uint64_t sum_insert_ops(CONFIG *);
+uint64_t sum_pop_ops(CONFIG *);
+uint64_t sum_read_ops(CONFIG *);
+uint64_t sum_truncate_ops(CONFIG *);
+uint64_t sum_update_ops(CONFIG *);
+void	 usage(void);
+void	 worker_throttle(CONFIG_THREAD*);
 
-void	 lprintf(const WTPERF *, int err, uint32_t, const char *, ...)
+void	 lprintf(const CONFIG *, int err, uint32_t, const char *, ...)
 #if defined(__GNUC__)
 __attribute__((format (printf, 4, 5)))
 #endif
 ;
 
 static inline void
-generate_key(CONFIG_OPTS *opts, char *key_buf, uint64_t keyno)
+generate_key(CONFIG *cfg, char *key_buf, uint64_t keyno)
 {
-	u64_to_string_zf(keyno, key_buf, opts->key_sz);
+	/*
+	 * Don't change to snprintf, sprintf is faster in some tests.
+	 */
+	sprintf(key_buf, "%0*" PRIu64, cfg->key_sz - 1, keyno);
 }
 
 static inline void

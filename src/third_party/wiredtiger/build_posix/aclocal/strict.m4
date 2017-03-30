@@ -40,12 +40,6 @@ AC_DEFUN([AM_GCC_WARNINGS], [
 	w="$w -Wno-error=inline"
 	w="$w -Wno-error=unsafe-loop-optimizations"
 
-	case "$1" in
-	[*6.[0-9].[0-9]*])				# gcc6.X
-		w="$w -Wduplicated-cond"
-		w="$w -Wmisleading-indentation";;
-	esac
-
 	wt_cv_strict_warnings="$w"
 ])
 
@@ -66,17 +60,12 @@ AC_DEFUN([AM_CLANG_WARNINGS], [
 	# w="$w -Wno-error=cast-qual"
 	w="$w -Wno-cast-qual"
 
-	case "$1" in
-	*Apple*clang*version*4.1*)
-		# Apple clang has its own numbering system, and older OS X
-		# releases need some special love. Turn off some flags for
-		# Apple's clang 4.1:
-		#	Apple clang version 4.1
-		#	(tags/Apple/clang-421.11.66) (based on LLVM 3.1svn)
-		w="$w -Wno-attributes"
-		w="$w -Wno-pedantic"
-		w="$w -Wno-unused-command-line-argument";;
-	esac
+	# Older OS X releases need some special love; these flags should be
+	# removed in the not-too-distant future.
+	# Apple clang version 4.1
+	#	(tags/Apple/clang-421.11.66) (based on LLVM 3.1svn)
+	w="$w -Wno-pedantic"
+	w="$w -Wno-unused-command-line-argument"
 
 	# Ignore unrecognized options.
 	w="$w -Wno-unknown-warning-option"

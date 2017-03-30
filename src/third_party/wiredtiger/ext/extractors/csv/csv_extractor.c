@@ -54,22 +54,6 @@ typedef struct {
 } CSV_EXTRACTOR;
 
 /*
- * csv_error --
- *	Display an error from this module in a standard way.
- */
-static int
-csv_error(const CSV_EXTRACTOR *csv_extractor,
-    WT_SESSION *session, int err, const char *msg)
-{
-	WT_EXTENSION_API *wt_api;
-
-	wt_api = csv_extractor->wt_api;
-	(void)wt_api->err_printf(wt_api, session,
-	    "csv extraction: %s: %s", msg, wt_api->strerror(wt_api, NULL, err));
-	return (err);
-}
-
-/*
  * csv_extract --
  *	WiredTiger CSV extraction.
  */
@@ -77,19 +61,19 @@ static int
 csv_extract(WT_EXTRACTOR *extractor, WT_SESSION *session,
     const WT_ITEM *key, const WT_ITEM *value, WT_CURSOR *result_cursor)
 {
-	const CSV_EXTRACTOR *csv_extractor;
-	WT_EXTENSION_API *wt_api;
-	size_t len;
-	int i, ret, val;
 	char *copy, *p, *pend, *valstr;
+	const CSV_EXTRACTOR *csv_extractor;
+	int i, ret, val;
+	size_t len;
+	WT_EXTENSION_API *wtapi;
 
 	(void)key;				/* Unused parameters */
 
 	csv_extractor = (const CSV_EXTRACTOR *)extractor;
-	wt_api = csv_extractor->wt_api;
+	wtapi = csv_extractor->wt_api;
 
 	/* Unpack the value. */
-	if ((ret = wt_api->struct_unpack(wt_api,
+	if ((ret = wtapi->struct_unpack(wtapi,
 	    session, value->data, value->size, "S", &valstr)) != 0)
 		return (ret);
 
@@ -114,10 +98,8 @@ csv_extract(WT_EXTRACTOR *extractor, WT_SESSION *session,
 		copy[len] = '\0';
 		if (csv_extractor->format_isnum) {
 			if ((val = atoi(copy)) < 0) {
-				ret = csv_error(csv_extractor,
-				    session, EINVAL, "invalid key value");
 				free(copy);
-				return (ret);
+				return (EINVAL);
 			}
 			result_cursor->set_key(result_cursor, val);
 		} else
@@ -143,38 +125,29 @@ csv_customize(WT_EXTRACTOR *extractor, WT_SESSION *session,
 	CSV_EXTRACTOR *csv_extractor;
 	WT_CONFIG_ITEM field, format;
 	WT_CONFIG_PARSER *parser;
-	WT_EXTENSION_API *wt_api;
-	long field_num;
+	WT_EXTENSION_API *wtapi;
 	int ret;
+	long field_num;
 
 	(void)session;				/* Unused parameters */
 	(void)uri;				/* Unused parameters */
 
 	orig = (const CSV_EXTRACTOR *)extractor;
-	wt_api = orig->wt_api;
-	if ((ret = wt_api->config_parser_open(wt_api, session, appcfg->str,
+	wtapi = orig->wt_api;
+	if ((ret = wtapi->config_parser_open(wtapi, session, appcfg->str,
 	    appcfg->len, &parser)) != 0)
 		return (ret);
 	if ((ret = parser->get(parser, "field", &field)) != 0 ||
 	    (ret = parser->get(parser, "format", &format)) != 0) {
-		if (ret == WT_NOTFOUND) {
-			(void)wt_api->err_printf(
-			    wt_api, session, "field or format not found");
-			return (WT_NOTFOUND);
-		}
+		if (ret == WT_NOTFOUND)
+			return (EINVAL);
 		return (ret);
 	}
 	field_num = strtol(field.str, NULL, 10);
-	if (field_num < 0 || field_num > INT_MAX) {
-		(void)wt_api->err_printf(
-		    wt_api, session, "field: invalid format");
+	if (field_num < 0 || field_num > INT_MAX)
 		return (EINVAL);
-	}
-	if (format.len != 1 || (format.str[0] != 'S' && format.str[0] != 'i')) {
-		(void)wt_api->err_printf(
-		    wt_api, session, "format: invalid format");
+	if (format.len != 1 || (format.str[0] != 'S' && format.str[0] != 'i'))
 		return (EINVAL);
-	}
 	if ((csv_extractor = calloc(1, sizeof(CSV_EXTRACTOR))) == NULL)
 		return (errno);
 

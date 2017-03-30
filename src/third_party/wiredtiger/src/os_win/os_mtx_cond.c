@@ -13,10 +13,15 @@
  *	Allocate and initialize a condition variable.
  */
 int
-__wt_cond_alloc(WT_SESSION_IMPL *session, const char *name, WT_CONDVAR **condp)
+__wt_cond_alloc(WT_SESSION_IMPL *session,
+    const char *name, bool is_signalled, WT_CONDVAR **condp)
 {
 	WT_CONDVAR *cond;
 
+	/*
+	 * !!!
+	 * This function MUST handle a NULL session handle.
+	 */
 	WT_RET(__wt_calloc_one(session, &cond));
 
 	InitializeCriticalSection(&cond->mtx);
@@ -25,7 +30,7 @@ __wt_cond_alloc(WT_SESSION_IMPL *session, const char *name, WT_CONDVAR **condp)
 	InitializeConditionVariable(&cond->cond);
 
 	cond->name = name;
-	cond->waiters = 0;
+	cond->waiters = is_signalled ? -1 : 0;
 
 	*condp = cond;
 	return (0);
@@ -33,12 +38,12 @@ __wt_cond_alloc(WT_SESSION_IMPL *session, const char *name, WT_CONDVAR **condp)
 
 /*
  * __wt_cond_wait_signal --
- *	Wait on a mutex, optionally timing out.  If we get it before the time
- * out period expires, let the caller know.
+ *	Wait on a mutex, optionally timing out.  If we get it
+ *	before the time out period expires, let the caller know.
  */
-void
-__wt_cond_wait_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond,
-    uint64_t usecs, bool (*run_func)(WT_SESSION_IMPL *), bool *signalled)
+int
+__wt_cond_wait_signal(
+    WT_SESSION_IMPL *session, WT_CONDVAR *cond, uint64_t usecs, bool *signalled)
 {
 	BOOL sleepret;
 	DWORD milliseconds, windows_error;
@@ -50,34 +55,23 @@ __wt_cond_wait_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond,
 	/* Fast path if already signalled. */
 	*signalled = true;
 	if (__wt_atomic_addi32(&cond->waiters, 1) == 0)
-		return;
+		return (0);
 
-	__wt_verbose(session, WT_VERB_MUTEX, "wait %s", cond->name);
-	WT_STAT_CONN_INCR(session, cond_wait);
+	/*
+	 * !!!
+	 * This function MUST handle a NULL session handle.
+	 */
+	if (session != NULL) {
+		WT_RET(__wt_verbose(session, WT_VERB_MUTEX,
+			"wait %s cond (%p)", cond->name, cond));
+		WT_STAT_FAST_CONN_INCR(session, cond_wait);
+	}
 
 	EnterCriticalSection(&cond->mtx);
 	locked = true;
 
-	/*
-	 * It's possible to race with threads waking us up. That's not a problem
-	 * if there are multiple wakeups because the next wakeup will get us, or
-	 * if we're only pausing for a short period. It's a problem if there's
-	 * only a single wakeup, our waker is likely waiting for us to exit.
-	 * After acquiring the mutex (so we're guaranteed to be awakened by any
-	 * future wakeup call), optionally check if we're OK to keep running.
-	 * This won't ensure our caller won't just loop and call us again, but
-	 * at least it's not our fault.
-	 *
-	 * Assert we're not waiting longer than a second if not checking the
-	 * run status.
-	 */
-	WT_ASSERT(session, run_func != NULL || usecs <= WT_MILLION);
-
-	if (run_func != NULL && !run_func(session))
-		goto skipping;
-
 	if (usecs > 0) {
-		milliseconds64 = usecs / WT_THOUSAND;
+		milliseconds64 = usecs / 1000;
 
 		/*
 		 * Check for 32-bit unsigned integer overflow
@@ -107,7 +101,7 @@ __wt_cond_wait_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond,
 	if (sleepret == 0) {
 		windows_error = __wt_getlasterror();
 		if (windows_error == ERROR_TIMEOUT) {
-skipping:		*signalled = false;
+			*signalled = false;
 			sleepret = 1;
 		}
 	}
@@ -118,45 +112,48 @@ skipping:		*signalled = false;
 		LeaveCriticalSection(&cond->mtx);
 
 	if (sleepret != 0)
-		return;
+		return (0);
 
-	__wt_errx(session, "SleepConditionVariableCS: %s: %s",
-	    cond->name, __wt_formatmessage(session, windows_error));
-	WT_PANIC_MSG(session, __wt_map_windows_error(windows_error),
-	    "SleepConditionVariableCS: %s", cond->name);
+	__wt_errx(session, "SleepConditionVariableCS: %s",
+	    __wt_formatmessage(session, windows_error));
+	return (__wt_map_windows_error(windows_error));
 }
 
 /*
  * __wt_cond_signal --
  *	Signal a waiting thread.
  */
-void
+int
 __wt_cond_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond)
 {
 	WT_DECL_RET;
+	bool locked;
 
-	__wt_verbose(session, WT_VERB_MUTEX, "signal %s", cond->name);
-
-	/*
-	 * Our callers often set flags to cause a thread to exit. Add a barrier
-	 * to ensure exit flags are seen by the sleeping threads, otherwise we
-	 * can wake up a thread, it immediately goes back to sleep, and we'll
-	 * hang. Use a full barrier (we may not write before waiting on thread
-	 * join).
-	 */
-	WT_FULL_BARRIER();
+	locked = false;
 
 	/*
-	 * Fast path if we are in (or can enter), a state where the next waiter
-	 * will return immediately as already signaled.
+	 * !!!
+	 * This function MUST handle a NULL session handle.
 	 */
-	if (cond->waiters == -1 ||
-	    (cond->waiters == 0 && __wt_atomic_casi32(&cond->waiters, 0, -1)))
-		return;
+	if (session != NULL)
+		WT_RET(__wt_verbose(session, WT_VERB_MUTEX,
+			"signal %s cond (%p)", cond->name, cond));
 
-	EnterCriticalSection(&cond->mtx);
-	WakeAllConditionVariable(&cond->cond);
-	LeaveCriticalSection(&cond->mtx);
+	/* Fast path if already signalled. */
+	if (cond->waiters == -1)
+		return (0);
+
+	if (cond->waiters > 0 || !__wt_atomic_casi32(&cond->waiters, 0, -1)) {
+		EnterCriticalSection(&cond->mtx);
+		locked = true;
+		WakeAllConditionVariable(&cond->cond);
+	}
+
+	if (locked)
+		LeaveCriticalSection(&cond->mtx);
+	if (ret == 0)
+		return (0);
+	WT_RET_MSG(session, ret, "WakeAllConditionVariable");
 }
 
 /*
@@ -167,6 +164,7 @@ int
 __wt_cond_destroy(WT_SESSION_IMPL *session, WT_CONDVAR **condp)
 {
 	WT_CONDVAR *cond;
+	WT_DECL_RET;
 
 	cond = *condp;
 	if (cond == NULL)
@@ -176,5 +174,5 @@ __wt_cond_destroy(WT_SESSION_IMPL *session, WT_CONDVAR **condp)
 	DeleteCriticalSection(&cond->mtx);
 	__wt_free(session, *condp);
 
-	return (0);
+	return (ret);
 }

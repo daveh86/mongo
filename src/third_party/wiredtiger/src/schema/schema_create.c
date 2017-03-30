@@ -70,7 +70,7 @@ __create_file(WT_SESSION_IMPL *session,
 
 	filename = uri;
 	if (!WT_PREFIX_SKIP(filename, "file:"))
-		return (__wt_unexpected_object_type(session, uri, "file:"));
+		WT_RET_MSG(session, EINVAL, "Expected a 'file:' URI: %s", uri);
 
 	/* Check if the file already exists. */
 	if (!is_metadata && (ret =
@@ -193,8 +193,7 @@ __create_colgroup(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "colgroup:"))
-		return (
-		    __wt_unexpected_object_type(session, name, "colgroup:"));
+		return (EINVAL);
 	cgname = strchr(tablename, ':');
 	if (cgname != NULL) {
 		tlen = (size_t)(cgname - tablename);
@@ -385,7 +384,7 @@ __create_index(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "index:"))
-		return (__wt_unexpected_object_type(session, name, "index:"));
+		return (EINVAL);
 	idxname = strchr(tablename, ':');
 	if (idxname == NULL)
 		WT_RET_MSG(session, EINVAL, "Invalid index name, "
@@ -447,7 +446,7 @@ __create_index(WT_SESSION_IMPL *session,
 	 */
 	npublic_cols = 0;
 	if (!have_extractor) {
-		__wt_config_subinit(session, &kcols, &icols);
+		WT_ERR(__wt_config_subinit(session, &kcols, &icols));
 		while ((ret = __wt_config_next(&kcols, &ckey, &cval)) == 0)
 			++npublic_cols;
 		WT_ERR_NOTFOUND_OK(ret);
@@ -466,7 +465,7 @@ __create_index(WT_SESSION_IMPL *session,
 	 * key_format, which we are calculating now, but not part of an index
 	 * cursor's key_format.
 	 */
-	__wt_config_subinit(session, &pkcols, &table->colconf);
+	WT_ERR(__wt_config_subinit(session, &pkcols, &table->colconf));
 	for (i = 0; i < table->nkey_columns &&
 	    (ret = __wt_config_next(&pkcols, &ckey, &cval)) == 0;
 	    i++) {
@@ -571,7 +570,7 @@ __create_table(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "table:"))
-		return (__wt_unexpected_object_type(session, name, "table:"));
+		return (EINVAL);
 
 	if ((ret = __wt_schema_get_table(session,
 	    tablename, strlen(tablename), false, &table)) == 0) {
@@ -582,7 +581,7 @@ __create_table(WT_SESSION_IMPL *session,
 	WT_ERR_NOTFOUND_OK(ret);
 
 	WT_ERR(__wt_config_gets(session, cfg, "colgroups", &cval));
-	__wt_config_subinit(session, &conf, &cval);
+	WT_ERR(__wt_config_subinit(session, &conf, &cval));
 	for (ncolgroups = 0;
 	    (ret = __wt_config_next(&conf, &cgkey, &cgval)) == 0;
 	    ncolgroups++)

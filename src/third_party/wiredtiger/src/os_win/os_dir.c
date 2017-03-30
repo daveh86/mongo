@@ -19,16 +19,15 @@ __wt_win_directory_list(WT_FILE_SYSTEM *file_system,
 {
 	DWORD windows_error;
 	HANDLE findhandle;
-	WIN32_FIND_DATAW finddata;
+	WIN32_FIND_DATA finddata;
 	WT_DECL_ITEM(pathbuf);
-	WT_DECL_ITEM(file_utf8);
-	WT_DECL_ITEM(pathbuf_wide);
-	WT_DECL_ITEM(prefix_wide);
 	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
-	size_t dirallocsz, pathlen, prefix_widelen;
+	size_t dirallocsz, pathlen;
 	uint32_t count;
 	char *dir_copy, **entries;
+
+	WT_UNUSED(file_system);
 
 	session = (WT_SESSION_IMPL *)wt_session;
 
@@ -46,11 +45,7 @@ __wt_win_directory_list(WT_FILE_SYSTEM *file_system,
 	WT_ERR(__wt_scr_alloc(session, pathlen + 3, &pathbuf));
 	WT_ERR(__wt_buf_fmt(session, pathbuf, "%s\\*", dir_copy));
 
-	WT_ERR(__wt_to_utf16_string(session, pathbuf->data, &pathbuf_wide));
-	WT_ERR(__wt_to_utf16_string(session, prefix, &prefix_wide));
-	prefix_widelen = wcslen(prefix_wide->data);
-
-	findhandle = FindFirstFileW(pathbuf_wide->data, &finddata);
+	findhandle = FindFirstFileA(pathbuf->data, &finddata);
 	if (findhandle == INVALID_HANDLE_VALUE) {
 		windows_error = __wt_getlasterror();
 		__wt_errx(session,
@@ -64,25 +59,21 @@ __wt_win_directory_list(WT_FILE_SYSTEM *file_system,
 		/*
 		 * Skip . and ..
 		 */
-		if (wcscmp(finddata.cFileName, L".") == 0 ||
-		    wcscmp(finddata.cFileName, L"..") == 0)
+		if (strcmp(finddata.cFileName, ".") == 0 ||
+		    strcmp(finddata.cFileName, "..") == 0)
 			continue;
 
 		/* The list of files is optionally filtered by a prefix. */
 		if (prefix != NULL &&
-		    wcsncmp(finddata.cFileName, prefix_wide->data,
-			prefix_widelen) != 0)
+		    !WT_PREFIX_MATCH(finddata.cFileName, prefix))
 			continue;
 
 		WT_ERR(__wt_realloc_def(
 		    session, &dirallocsz, count + 1, &entries));
-
-		WT_ERR(__wt_to_utf8_string(
-		    session, finddata.cFileName, &file_utf8));
-		WT_ERR(__wt_strdup(session, file_utf8->data, &entries[count]));
+		WT_ERR(__wt_strdup(
+		    session, finddata.cFileName, &entries[count]));
 		++count;
-		__wt_scr_free(session, &file_utf8);
-	} while (FindNextFileW(findhandle, &finddata) != 0);
+	} while (FindNextFileA(findhandle, &finddata) != 0);
 
 	*dirlistp = entries;
 	*countp = count;
@@ -100,9 +91,6 @@ err:	if (findhandle != INVALID_HANDLE_VALUE)
 
 	__wt_free(session, dir_copy);
 	__wt_scr_free(session, &pathbuf);
-	__wt_scr_free(session, &file_utf8);
-	__wt_scr_free(session, &pathbuf_wide);
-	__wt_scr_free(session, &prefix_wide);
 
 	if (ret == 0)
 		return (0);

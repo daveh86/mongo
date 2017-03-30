@@ -150,22 +150,18 @@ static int
 __curlog_kv(WT_SESSION_IMPL *session, WT_CURSOR *cursor)
 {
 	WT_CURSOR_LOG *cl;
-	WT_DECL_RET;
-	uint32_t fileid, key_count, opsize, optype, raw;
+	WT_ITEM item;
+	uint32_t fileid, key_count, opsize, optype;
 
 	cl = (WT_CURSOR_LOG *)cursor;
-	/* Temporarily turn off raw so we can do direct cursor operations. */
-	raw = F_MASK(cursor, WT_CURSTD_RAW);
-	F_CLR(cursor, WT_CURSTD_RAW);
-
 	/*
 	 * If it is a commit and we have stepped over the header, peek to get
 	 * the size and optype and read out any key/value from this operation.
 	 */
 	if ((key_count = cl->step_count++) > 0) {
-		WT_ERR(__wt_logop_read(session,
+		WT_RET(__wt_logop_read(session,
 		    &cl->stepp, cl->stepp_end, &optype, &opsize));
-		WT_ERR(__curlog_op_read(session, cl, optype, opsize, &fileid));
+		WT_RET(__curlog_op_read(session, cl, optype, opsize, &fileid));
 		/* Position on the beginning of the next record part. */
 		cl->stepp += opsize;
 	} else {
@@ -185,14 +181,39 @@ __curlog_kv(WT_SESSION_IMPL *session, WT_CURSOR *cursor)
 	 * The log cursor sets the LSN and step count as the cursor key and
 	 * and log record related data in the value.  The data in the value
 	 * contains any operation key/value that was in the log record.
+	 * For the special case that the caller needs the result in raw form,
+	 * we create packed versions of the key/value.
 	 */
-	__wt_cursor_set_key(cursor, cl->cur_lsn->l.file, cl->cur_lsn->l.offset,
-	    key_count);
-	__wt_cursor_set_value(cursor, cl->txnid, cl->rectype, optype, fileid,
-	    cl->opkey, cl->opvalue);
+	if (FLD_ISSET(cursor->flags, WT_CURSTD_RAW)) {
+		memset(&item, 0, sizeof(item));
+		WT_RET(wiredtiger_struct_size((WT_SESSION *)session,
+		    &item.size, WT_LOGC_KEY_FORMAT, cl->cur_lsn->l.file,
+		    cl->cur_lsn->l.offset, key_count));
+		WT_RET(__wt_realloc(session, NULL, item.size, &cl->packed_key));
+		item.data = cl->packed_key;
+		WT_RET(wiredtiger_struct_pack((WT_SESSION *)session,
+		    cl->packed_key, item.size, WT_LOGC_KEY_FORMAT,
+		    cl->cur_lsn->l.file, cl->cur_lsn->l.offset, key_count));
+		__wt_cursor_set_key(cursor, &item);
 
-err:	F_SET(cursor, raw);
-	return (ret);
+		WT_RET(wiredtiger_struct_size((WT_SESSION *)session,
+		    &item.size, WT_LOGC_VALUE_FORMAT, cl->txnid, cl->rectype,
+		    optype, fileid, cl->opkey, cl->opvalue));
+		WT_RET(__wt_realloc(session, NULL, item.size,
+		    &cl->packed_value));
+		item.data = cl->packed_value;
+		WT_RET(wiredtiger_struct_pack((WT_SESSION *)session,
+		    cl->packed_value, item.size, WT_LOGC_VALUE_FORMAT,
+		    cl->txnid, cl->rectype, optype, fileid, cl->opkey,
+		    cl->opvalue));
+		__wt_cursor_set_value(cursor, &item);
+	} else {
+		__wt_cursor_set_key(cursor, cl->cur_lsn->l.file,
+		    cl->cur_lsn->l.offset, key_count);
+		__wt_cursor_set_value(cursor, cl->txnid, cl->rectype, optype,
+		    fileid, cl->opkey, cl->opvalue);
+	}
+	return (0);
 }
 
 /*
@@ -225,8 +246,8 @@ __curlog_next(WT_CURSOR *cursor)
 	}
 	WT_ASSERT(session, cl->logrec->data != NULL);
 	WT_ERR(__curlog_kv(session, cursor));
-	WT_STAT_CONN_INCR(session, cursor_next);
-	WT_STAT_DATA_INCR(session, cursor_next);
+	WT_STAT_FAST_CONN_INCR(session, cursor_next);
+	WT_STAT_FAST_DATA_INCR(session, cursor_next);
 
 err:	API_END_RET(session, ret);
 
@@ -243,19 +264,17 @@ __curlog_search(WT_CURSOR *cursor)
 	WT_DECL_RET;
 	WT_LSN key;
 	WT_SESSION_IMPL *session;
-	uint32_t counter, key_file, key_offset, raw;
+	uint32_t counter, key_file, key_offset;
 
 	cl = (WT_CURSOR_LOG *)cursor;
-	/* Temporarily turn off raw so we can do direct cursor operations. */
-	raw = F_MASK(cursor, WT_CURSTD_RAW);
-	F_CLR(cursor, WT_CURSTD_RAW);
 
 	CURSOR_API_CALL(cursor, session, search, NULL);
 
 	/*
 	 * !!! We are ignoring the counter and only searching based on the LSN.
 	 */
-	WT_ERR(__wt_cursor_get_key(cursor, &key_file, &key_offset, &counter));
+	WT_ERR(__wt_cursor_get_key((WT_CURSOR *)cl,
+	    &key_file, &key_offset, &counter));
 	WT_SET_LSN(&key, key_file, key_offset);
 	ret = __wt_log_scan(session, &key, WT_LOGSCAN_ONE,
 	    __curlog_logrec, cl);
@@ -263,11 +282,10 @@ __curlog_search(WT_CURSOR *cursor)
 		ret = WT_NOTFOUND;
 	WT_ERR(ret);
 	WT_ERR(__curlog_kv(session, cursor));
-	WT_STAT_CONN_INCR(session, cursor_search);
-	WT_STAT_DATA_INCR(session, cursor_search);
+	WT_STAT_FAST_CONN_INCR(session, cursor_search);
+	WT_STAT_FAST_DATA_INCR(session, cursor_search);
 
-err:	F_SET(cursor, raw);
-	API_END_RET(session, ret);
+err:	API_END_RET(session, ret);
 }
 
 /*
@@ -305,7 +323,7 @@ __curlog_close(WT_CURSOR *cursor)
 
 	WT_ASSERT(session, FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED));
 	if (F_ISSET(cl, WT_CURLOG_ARCHIVE_LOCK))
-		__wt_readunlock(session, &conn->log->log_archive_lock);
+		WT_TRET(__wt_readunlock(session, conn->log->log_archive_lock));
 
 	__wt_free(session, cl->cur_lsn);
 	__wt_free(session, cl->next_lsn);
@@ -383,7 +401,7 @@ __wt_curlog_open(WT_SESSION_IMPL *session,
 	WT_ERR(__wt_log_force_write(session, 1, NULL));
 
 	/* Log cursors block archiving. */
-	__wt_readlock(session, &log->log_archive_lock);
+	WT_ERR(__wt_readlock(session, log->log_archive_lock));
 	F_SET(cl, WT_CURLOG_ARCHIVE_LOCK);
 
 	if (0) {

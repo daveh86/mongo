@@ -76,8 +76,7 @@ __wt_buf_set(
 	WT_RET(__wt_buf_initsize(session, buf, size));
 
 	/* Copy the data, allowing for overlapping strings. */
-	if (size != 0)
-		memmove(buf->mem, data, size);
+	memmove(buf->mem, data, size);
 
 	return (0);
 }

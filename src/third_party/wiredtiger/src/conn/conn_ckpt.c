@@ -38,15 +38,6 @@ __ckpt_server_config(WT_SESSION_IMPL *session, const char **cfg, bool *startp)
 	if (conn->ckpt_usecs != 0 ||
 	    (conn->ckpt_logsize != 0 &&
 	    FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))) {
-		/*
-		 * If checkpointing based on log data, use a minimum of the
-		 * log file size.  The logging subsystem has already been
-		 * initialized.
-		 */
-		if (conn->ckpt_logsize != 0 &&
-		    FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
-			conn->ckpt_logsize = WT_MAX(
-			    conn->ckpt_logsize, conn->log_file_max);
 		/* Checkpoints are incompatible with in-memory configuration */
 		WT_RET(__wt_config_gets(session, cfg, "in_memory", &cval));
 		if (cval.val != 0)
@@ -60,16 +51,6 @@ __ckpt_server_config(WT_SESSION_IMPL *session, const char **cfg, bool *startp)
 	}
 
 	return (0);
-}
-
-/*
- * __ckpt_server_run_chk --
- *	Check to decide if the checkpoint server should continue running.
- */
-static bool
-__ckpt_server_run_chk(WT_SESSION_IMPL *session)
-{
-	return (F_ISSET(S2C(session), WT_CONN_SERVER_CHECKPOINT));
 }
 
 /*
@@ -88,50 +69,32 @@ __ckpt_server(void *arg)
 	conn = S2C(session);
 	wt_session = (WT_SESSION *)session;
 
-	for (;;) {
+	while (F_ISSET(conn, WT_CONN_SERVER_RUN) &&
+	    F_ISSET(conn, WT_CONN_SERVER_CHECKPOINT)) {
 		/*
 		 * Wait...
 		 * NOTE: If the user only configured logsize, then usecs
 		 * will be 0 and this wait won't return until signalled.
 		 */
-		__wt_cond_wait(session,
-		    conn->ckpt_cond, conn->ckpt_usecs, __ckpt_server_run_chk);
+		WT_ERR(
+		    __wt_cond_wait(session, conn->ckpt_cond, conn->ckpt_usecs));
 
-		/* Check if we're quitting or being reconfigured. */
-		if (!__ckpt_server_run_chk(session))
-			break;
+		/* Checkpoint the database. */
+		WT_ERR(wt_session->checkpoint(wt_session, NULL));
 
-		/*
-		 * Checkpoint the database if the connection is marked dirty.
-		 * A connection is marked dirty whenever a btree gets marked
-		 * dirty, which reflects upon a change in the database that
-		 * needs to be checkpointed. Said that, there can be short
-		 * instances when a btree gets marked dirty and the connection
-		 * is yet to be. We might skip a checkpoint in that short
-		 * instance, which is okay because by the next time we get to
-		 * checkpoint, the connection would have been marked dirty and
-		 * hence the checkpoint will not be skipped this time.
-		 */
-		if (conn->modified) {
-			WT_ERR(wt_session->checkpoint(wt_session, NULL));
+		/* Reset. */
+		if (conn->ckpt_logsize) {
+			__wt_log_written_reset(session);
+			conn->ckpt_signalled = 0;
 
-			/* Reset. */
-			if (conn->ckpt_logsize) {
-				__wt_log_written_reset(session);
-				conn->ckpt_signalled = false;
-
-				/*
-				 * In case we crossed the log limit during the
-				 * checkpoint and the condition variable was
-				 * already signalled, do a tiny wait to clear
-				 * it so we don't do another checkpoint
-				 * immediately.
-				 */
-				__wt_cond_wait(
-				    session, conn->ckpt_cond, 1, NULL);
-			}
-		} else
-			WT_STAT_CONN_INCR(session, txn_checkpoint_skipped);
+			/*
+			 * In case we crossed the log limit during the
+			 * checkpoint and the condition variable was already
+			 * signalled, do a tiny wait to clear it so we don't do
+			 * another checkpoint immediately.
+			 */
+			WT_ERR(__wt_cond_wait(session, conn->ckpt_cond, 1));
+		}
 	}
 
 	if (0) {
@@ -167,7 +130,8 @@ __ckpt_server_start(WT_CONNECTION_IMPL *conn)
 	    "checkpoint-server", true, session_flags, &conn->ckpt_session));
 	session = conn->ckpt_session;
 
-	WT_RET(__wt_cond_alloc(session, "checkpoint server", &conn->ckpt_cond));
+	WT_RET(__wt_cond_alloc(
+	    session, "checkpoint server", false, &conn->ckpt_cond));
 
 	/*
 	 * Start the thread.
@@ -227,7 +191,7 @@ __wt_checkpoint_server_destroy(WT_SESSION_IMPL *session)
 
 	F_CLR(conn, WT_CONN_SERVER_CHECKPOINT);
 	if (conn->ckpt_tid_set) {
-		__wt_cond_signal(session, conn->ckpt_cond);
+		WT_TRET(__wt_cond_signal(session, conn->ckpt_cond));
 		WT_TRET(__wt_thread_join(session, conn->ckpt_tid));
 		conn->ckpt_tid_set = false;
 	}
@@ -254,8 +218,9 @@ __wt_checkpoint_server_destroy(WT_SESSION_IMPL *session)
 /*
  * __wt_checkpoint_signal --
  *	Signal the checkpoint thread if sufficient log has been written.
+ *	Return 1 if this signals the checkpoint thread, 0 otherwise.
  */
-void
+int
 __wt_checkpoint_signal(WT_SESSION_IMPL *session, wt_off_t logsize)
 {
 	WT_CONNECTION_IMPL *conn;
@@ -263,7 +228,8 @@ __wt_checkpoint_signal(WT_SESSION_IMPL *session, wt_off_t logsize)
 	conn = S2C(session);
 	WT_ASSERT(session, WT_CKPT_LOGSIZE(conn));
 	if (logsize >= conn->ckpt_logsize && !conn->ckpt_signalled) {
-		__wt_cond_signal(session, conn->ckpt_cond);
-		conn->ckpt_signalled = true;
+		WT_RET(__wt_cond_signal(session, conn->ckpt_cond));
+		conn->ckpt_signalled = 1;
 	}
+	return (0);
 }

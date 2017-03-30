@@ -218,14 +218,6 @@ struct __wt_page_modify {
 	/* The first unwritten transaction ID (approximate). */
 	uint64_t first_dirty_txn;
 
-	/* The transaction state last time eviction was attempted. */
-	uint64_t last_eviction_id;
-
-#ifdef HAVE_DIAGNOSTIC
-	/* Check that transaction time moves forward. */
-	uint64_t last_oldest_id;
-#endif
-
 	/* Avoid checking for obsolete updates during checkpoints. */
 	uint64_t obsolete_check_txn;
 
@@ -234,6 +226,9 @@ struct __wt_page_modify {
 
 	/* The largest update transaction ID (approximate). */
 	uint64_t update_txn;
+
+	/* Check that transaction time moves forward. */
+	uint64_t last_oldest_id;
 
 	/* Dirty bytes added to the cache. */
 	size_t bytes_dirty;
@@ -311,7 +306,7 @@ struct __wt_page_modify {
 		 */
 		WT_ADDR	 addr;
 		uint32_t size;
-		uint32_t checksum;
+		uint32_t cksum;
 	} *multi;
 	uint32_t multi_entries;		/* Multiple blocks element count */
 	} m;
@@ -430,22 +425,7 @@ struct __wt_page_modify {
 #define	WT_PM_REC_MULTIBLOCK	2	/* Reconciliation: multiple blocks */
 #define	WT_PM_REC_REPLACE	3	/* Reconciliation: single block */
 	uint8_t rec_result;		/* Reconciliation state */
-
-	uint8_t update_restored;	/* Page created by restoring updates */
 };
-
-/*
- * WT_COL_RLE --
- * Variable-length column-store pages have an array of page entries with RLE
- * counts greater than 1 when reading the page, so it's not necessary to walk
- * the page counting records to find a specific entry. We can do a binary search
- * in this array, then an offset calculation to find the cell.
- */
-WT_PACKED_STRUCT_BEGIN(__wt_col_rle)
-	uint64_t recno;			/* Record number of first repeat. */
-	uint64_t rle;			/* Repeat count. */
-	uint32_t indx;			/* Slot of entry in col_var. */
-WT_PACKED_STRUCT_END
 
 /*
  * WT_PAGE --
@@ -456,6 +436,9 @@ struct __wt_page {
 	union {
 		/*
 		 * Internal pages (both column- and row-store).
+		 *
+		 * The page record number is only used by column-store, but it's
+		 * simpler having only one kind of internal page.
 		 *
 		 * In-memory internal pages have an array of pointers to child
 		 * structures, maintained in collated order.  When a page is
@@ -483,7 +466,6 @@ struct __wt_page {
 		 */
 		struct {
 			WT_REF	*parent_ref;	/* Parent reference */
-			uint64_t split_gen;	/* Generation of last split */
 
 			struct __wt_page_index {
 				uint32_t entries;
@@ -493,8 +475,6 @@ struct __wt_page {
 		} intl;
 #undef	pg_intl_parent_ref
 #define	pg_intl_parent_ref		u.intl.parent_ref
-#undef	pg_intl_split_gen
-#define	pg_intl_split_gen		u.intl.split_gen
 
 	/*
 	 * Macros to copy/set the index because the name is obscured to ensure
@@ -531,54 +511,53 @@ struct __wt_page {
 } while (0)
 
 		/* Row-store leaf page. */
-		WT_ROW *row;			/* Key/value pairs */
-#undef	pg_row
-#define	pg_row		u.row
+		struct {
+			WT_ROW *d;		/* Key/value pairs */
+			uint32_t entries;	/* Entries */
+		} row;
+#undef	pg_row_d
+#define	pg_row_d	u.row.d
+#undef	pg_row_entries
+#define	pg_row_entries	u.row.entries
 
 		/* Fixed-length column-store leaf page. */
-		uint8_t *fix_bitf;		/* Values */
+		struct {
+			uint8_t	*bitf;		/* Values */
+			uint32_t entries;	/* Entries */
+		} col_fix;
 #undef	pg_fix_bitf
-#define	pg_fix_bitf	u.fix_bitf
+#define	pg_fix_bitf	u.col_fix.bitf
+#undef	pg_fix_entries
+#define	pg_fix_entries	u.col_fix.entries
 
 		/* Variable-length column-store leaf page. */
 		struct {
-			WT_COL *col_var;	/* Values */
+			WT_COL *d;		/* Values */
 
 			/*
-			 * Variable-length column-store pages have an array
-			 * of page entries with RLE counts greater than 1 when
-			 * reading the page, so it's not necessary to walk the
-			 * page counting records to find a specific entry. We
-			 * can do a binary search in this array, then an offset
-			 * calculation to find the cell.
-			 *
-			 * It's a separate structure to keep the page structure
-			 * as small as possible.
+			 * Variable-length column-store files maintain a list of
+			 * RLE entries on the page so it's unnecessary to walk
+			 * the page counting records to find a specific entry.
 			 */
-			struct __wt_col_var_repeat {
-				uint32_t   nrepeats;	/* repeat slots */
-				WT_COL_RLE repeats[0];	/* lookup RLE array */
-			} *repeats;
-#define	WT_COL_VAR_REPEAT_SET(page)					\
-	((page)->u.col_var.repeats != NULL)
+			WT_COL_RLE *repeats;	/* RLE array for lookups */
+			uint32_t    nrepeats;	/* Number of repeat slots */
+
+			uint32_t    entries;	/* Entries */
 		} col_var;
-#undef	pg_var
-#define	pg_var		u.col_var.col_var
+#undef	pg_var_d
+#define	pg_var_d	u.col_var.d
 #undef	pg_var_repeats
-#define	pg_var_repeats	u.col_var.repeats->repeats
+#define	pg_var_repeats	u.col_var.repeats
 #undef	pg_var_nrepeats
-#define	pg_var_nrepeats	u.col_var.repeats->nrepeats
+#define	pg_var_nrepeats	u.col_var.nrepeats
+#undef	pg_var_entries
+#define	pg_var_entries	u.col_var.entries
 	} u;
 
 	/*
-	 * Page entries, type and flags are positioned at the end of the WT_PAGE
-	 * union to reduce cache misses in the row-store search function.
-	 *
-	 * The entries field only applies to leaf pages, internal pages use the
-	 * page-index entries instead.
+	 * The page's type and flags are positioned at the end of the WT_PAGE
+	 * union, it reduces cache misses in the row-store search function.
 	 */
-	uint32_t entries;		/* Leaf page entries */
-
 #define	WT_PAGE_IS_INTERNAL(page)					\
 	((page)->type == WT_PAGE_COL_INT || (page)->type == WT_PAGE_ROW_INT)
 #define	WT_PAGE_INVALID		0	/* Invalid page */
@@ -596,18 +575,18 @@ struct __wt_page {
 #define	WT_PAGE_DISK_MAPPED	0x04	/* Disk image in mapped memory */
 #define	WT_PAGE_EVICT_LRU	0x08	/* Page is on the LRU queue */
 #define	WT_PAGE_OVERFLOW_KEYS	0x10	/* Page has overflow keys */
-#define	WT_PAGE_SPLIT_INSERT	0x20	/* A leaf page was split for append */
-#define	WT_PAGE_UPDATE_IGNORE	0x40	/* Ignore updates on page discard */
+#define	WT_PAGE_SPLIT_BLOCK	0x20	/* Split blocking eviction and splits */
+#define	WT_PAGE_SPLIT_INSERT	0x40	/* A leaf page was split for append */
+#define	WT_PAGE_UPDATE_IGNORE	0x80	/* Ignore updates on page discard */
 	uint8_t flags_atomic;		/* Atomic flags, use F_*_ATOMIC */
 
 	uint8_t unused[2];		/* Unused padding */
 
 	/*
 	 * Used to protect and co-ordinate splits for internal pages and
-	 * reconciliation for all pages. Only used to co-ordinate among the
-	 * uncommon cases that require exclusive access to a page.
+	 * reconciliation for all pages.
 	 */
-	WT_RWLOCK page_lock;
+	WT_FAIR_LOCK page_lock;
 
 	/*
 	 * The page's read generation acts as an LRU value for each page in the
@@ -634,8 +613,6 @@ struct __wt_page {
 #define	WT_READGEN_START_VALUE	100
 #define	WT_READGEN_STEP		100
 	uint64_t read_gen;
-
-	uint64_t evict_pass_gen;	/* Eviction pass generation */
 
 	size_t memory_footprint;	/* Memory attached to the page */
 
@@ -736,7 +713,7 @@ struct __wt_ref {
 	 * up our slot in the page's index structure.
 	 */
 	WT_PAGE * volatile home;	/* Reference page */
-	volatile uint32_t pindex_hint;	/* Reference page index hint */
+	uint32_t pindex_hint;		/* Reference page index hint */
 
 #define	WT_REF_DISK	0		/* Page is on disk */
 #define	WT_REF_DELETED	1		/* Page is on disk, but deleted */
@@ -808,11 +785,11 @@ struct __wt_row {	/* On-page key, on-page cell, or off-page WT_IKEY */
  *	Walk the entries of an in-memory row-store leaf page.
  */
 #define	WT_ROW_FOREACH(page, rip, i)					\
-	for ((i) = (page)->entries,				\
-	    (rip) = (page)->pg_row; (i) > 0; ++(rip), --(i))
+	for ((i) = (page)->pg_row_entries,				\
+	    (rip) = (page)->pg_row_d; (i) > 0; ++(rip), --(i))
 #define	WT_ROW_FOREACH_REVERSE(page, rip, i)				\
-	for ((i) = (page)->entries,				\
-	    (rip) = (page)->pg_row + ((page)->entries - 1);	\
+	for ((i) = (page)->pg_row_entries,				\
+	    (rip) = (page)->pg_row_d + ((page)->pg_row_entries - 1);	\
 	    (i) > 0; --(rip), --(i))
 
 /*
@@ -820,7 +797,7 @@ struct __wt_row {	/* On-page key, on-page cell, or off-page WT_IKEY */
  *	Return the 0-based array offset based on a WT_ROW reference.
  */
 #define	WT_ROW_SLOT(page, rip)						\
-	((uint32_t)(((WT_ROW *)(rip)) - (page)->pg_row))
+	((uint32_t)(((WT_ROW *)(rip)) - (page)->pg_row_d))
 
 /*
  * WT_COL --
@@ -845,6 +822,18 @@ struct __wt_col {
 };
 
 /*
+ * WT_COL_RLE --
+ * In variable-length column store leaf pages, we build an array of entries
+ * with RLE counts greater than 1 when reading the page.  We can do a binary
+ * search in this array, then an offset calculation to find the cell.
+ */
+WT_PACKED_STRUCT_BEGIN(__wt_col_rle)
+	uint64_t recno;			/* Record number of first repeat. */
+	uint64_t rle;			/* Repeat count. */
+	uint32_t indx;			/* Slot of entry in col_var.d */
+WT_PACKED_STRUCT_END
+
+/*
  * WT_COL_PTR, WT_COL_PTR_SET --
  *	Return/Set a pointer corresponding to the data offset. (If the item does
  * not exist on the page, return a NULL.)
@@ -860,15 +849,15 @@ struct __wt_col {
  *	Walk the entries of variable-length column-store leaf page.
  */
 #define	WT_COL_FOREACH(page, cip, i)					\
-	for ((i) = (page)->entries,				\
-	    (cip) = (page)->pg_var; (i) > 0; ++(cip), --(i))
+	for ((i) = (page)->pg_var_entries,				\
+	    (cip) = (page)->pg_var_d; (i) > 0; ++(cip), --(i))
 
 /*
  * WT_COL_SLOT --
  *	Return the 0-based array offset based on a WT_COL reference.
  */
 #define	WT_COL_SLOT(page, cip)						\
-	((uint32_t)(((WT_COL *)cip) - (page)->pg_var))
+	((uint32_t)(((WT_COL *)cip) - (page)->pg_var_d))
 
 /*
  * WT_IKEY --
@@ -1045,7 +1034,7 @@ struct __wt_insert_head {
 #define	WT_ROW_INSERT_SMALLEST(page)					\
 	((page)->modify == NULL ||					\
 	    (page)->modify->mod_row_insert == NULL ?			\
-	    NULL : (page)->modify->mod_row_insert[(page)->entries])
+	    NULL : (page)->modify->mod_row_insert[(page)->pg_row_entries])
 
 /*
  * The column-store leaf page update lists are arrays of pointers to structures,

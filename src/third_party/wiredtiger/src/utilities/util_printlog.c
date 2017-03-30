@@ -14,8 +14,8 @@ int
 util_printlog(WT_SESSION *session, int argc, char *argv[])
 {
 	WT_DECL_RET;
-	uint32_t flags;
 	int ch;
+	uint32_t flags;
 
 	flags = 0;
 	while ((ch = __wt_getopt(progname, argc, argv, "f:x")) != EOF)
@@ -41,9 +41,17 @@ util_printlog(WT_SESSION *session, int argc, char *argv[])
 	if (argc != 0)
 		return (usage());
 
-	if ((ret = __wt_txn_printlog(session, flags)) != 0)
-		(void)util_err(session, ret, "printlog");
+	ret = __wt_txn_printlog(session, flags);
 
+	if (ret != 0) {
+		fprintf(stderr, "%s: printlog failed: %s\n",
+		    progname, session->strerror(session, ret));
+		goto err;
+	}
+
+	if (0) {
+err:		ret = 1;
+	}
 	return (ret);
 }
 

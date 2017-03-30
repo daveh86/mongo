@@ -54,7 +54,7 @@ __wt_schema_open_colgroups(WT_SESSION_IMPL *session, WT_TABLE *table)
 
 	WT_RET(__wt_scr_alloc(session, 0, &buf));
 
-	__wt_config_subinit(session, &cparser, &table->cgconf);
+	WT_ERR(__wt_config_subinit(session, &cparser, &table->cgconf));
 
 	/* Open each column group. */
 	for (i = 0; i < WT_COLGROUPS(table); i++) {
@@ -175,7 +175,7 @@ __open_index(WT_SESSION_IMPL *session, WT_TABLE *table, WT_INDEX *idx)
 	    session, idx->config, "columns", &idx->colconf));
 
 	/* Start with the declared index columns. */
-	__wt_config_subinit(session, &colconf, &idx->colconf);
+	WT_ERR(__wt_config_subinit(session, &colconf, &idx->colconf));
 	for (npublic_cols = 0;
 	    (ret = __wt_config_next(&colconf, &ckey, &cval)) == 0;
 	    ++npublic_cols)
@@ -202,7 +202,7 @@ __open_index(WT_SESSION_IMPL *session, WT_TABLE *table, WT_INDEX *idx)
 	 * Now add any primary key columns from the table that are not
 	 * already part of the index key.
 	 */
-	__wt_config_subinit(session, &colconf, &table->colconf);
+	WT_ERR(__wt_config_subinit(session, &colconf, &table->colconf));
 	for (i = 0; i < table->nkey_columns &&
 	    (ret = __wt_config_next(&colconf, &ckey, &cval)) == 0;
 	    i++) {
@@ -465,7 +465,7 @@ __schema_open_table(WT_SESSION_IMPL *session,
 	 * Count the number of columns: tables are "simple" if the columns
 	 * are not named.
 	 */
-	__wt_config_subinit(session, &cparser, &table->colconf);
+	WT_ERR(__wt_config_subinit(session, &cparser, &table->colconf));
 	table->is_simple = true;
 	while ((ret = __wt_config_next(&cparser, &ckey, &cval)) == 0)
 		table->is_simple = false;
@@ -482,7 +482,7 @@ __schema_open_table(WT_SESSION_IMPL *session,
 	    "colgroups", &table->cgconf));
 
 	/* Count the number of column groups. */
-	__wt_config_subinit(session, &cparser, &table->cgconf);
+	WT_ERR(__wt_config_subinit(session, &cparser, &table->cgconf));
 	table->ncolgroups = 0;
 	while ((ret = __wt_config_next(&cparser, &ckey, &cval)) == 0)
 		++table->ncolgroups;

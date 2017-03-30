@@ -115,8 +115,9 @@ __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 			    page, mod->mod_col_update, ins_headp, 1);
 			ins_headp = &mod->mod_col_update[0];
 		} else {
-			WT_PAGE_ALLOC_AND_SWAP(session, page,
-			    mod->mod_col_update, ins_headp, page->entries);
+			WT_PAGE_ALLOC_AND_SWAP(session,
+			    page, mod->mod_col_update, ins_headp,
+			    page->pg_var_entries);
 			ins_headp = &mod->mod_col_update[cbt->slot];
 		}
 

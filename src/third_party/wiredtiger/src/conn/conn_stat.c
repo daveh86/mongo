@@ -130,12 +130,12 @@ __statlog_config(WT_SESSION_IMPL *session, const char **cfg, bool *runp)
 
 	WT_RET(__wt_config_gets(session, cfg, "statistics_log.json", &cval));
 	if (cval.val != 0)
-		FLD_SET(conn->stat_flags, WT_STAT_JSON);
+		FLD_SET(conn->stat_flags, WT_CONN_STAT_JSON);
 
 	WT_RET(__wt_config_gets(
 	    session, cfg, "statistics_log.on_close", &cval));
 	if (cval.val != 0)
-		FLD_SET(conn->stat_flags, WT_STAT_ON_CLOSE);
+		FLD_SET(conn->stat_flags, WT_CONN_STAT_ON_CLOSE);
 
 	/*
 	 * We don't allow the log path to be reconfigured for security reasons.
@@ -155,13 +155,13 @@ __statlog_config(WT_SESSION_IMPL *session, const char **cfg, bool *runp)
 	WT_ERR(__wt_filename(session, tmp->data, &conn->stat_path));
 
 	WT_ERR(__wt_config_gets(session, cfg, "statistics_log.sources", &cval));
-	__wt_config_subinit(session, &objectconf, &cval);
+	WT_ERR(__wt_config_subinit(session, &objectconf, &cval));
 	for (cnt = 0; (ret = __wt_config_next(&objectconf, &k, &v)) == 0; ++cnt)
 		;
 	WT_ERR_NOTFOUND_OK(ret);
 	if (cnt != 0) {
 		WT_ERR(__wt_calloc_def(session, cnt + 1, &sources));
-		__wt_config_subinit(session, &objectconf, &cval);
+		WT_ERR(__wt_config_subinit(session, &objectconf, &cval));
 		for (cnt = 0;
 		    (ret = __wt_config_next(&objectconf, &k, &v)) == 0; ++cnt) {
 			/*
@@ -206,7 +206,7 @@ __statlog_config(WT_SESSION_IMPL *session, const char **cfg, bool *runp)
 #define	WT_TIMESTAMP_JSON_DEFAULT	"%Y-%m-%dT%H:%M:%S.000Z"
 	WT_ERR(__wt_config_gets(
 	    session, cfg, "statistics_log.timestamp", &cval));
-	if (FLD_ISSET(conn->stat_flags, WT_STAT_JSON) &&
+	if (FLD_ISSET(conn->stat_flags, WT_CONN_STAT_JSON) &&
 	    WT_STRING_MATCH(WT_TIMESTAMP_DEFAULT, cval.str, cval.len))
 		WT_ERR(__wt_strdup(
 		    session, WT_TIMESTAMP_JSON_DEFAULT, &conn->stat_format));
@@ -264,7 +264,7 @@ __statlog_dump(WT_SESSION_IMPL *session, const char *name, bool conn_stats)
 		goto err;
 	}
 
-	if (FLD_ISSET(conn->stat_flags, WT_STAT_JSON)) {
+	if (FLD_ISSET(conn->stat_flags, WT_CONN_STAT_JSON)) {
 		WT_ERR(__wt_fprintf(session, conn->stat_fs,
 		     "{\"version\":\"%s\",\"localTime\":\"%s\"",
 		     WIREDTIGER_VERSION_STRING, conn->stat_stamp));
@@ -409,12 +409,13 @@ __statlog_log_one(WT_SESSION_IMPL *session, WT_ITEM *path, WT_ITEM *tmp)
 	struct timespec ts;
 	struct tm *tm, _tm;
 	WT_CONNECTION_IMPL *conn;
+	WT_DECL_RET;
 	WT_FSTREAM *log_stream;
 
 	conn = S2C(session);
 
 	/* Get the current local time of day. */
-	__wt_epoch(session, &ts);
+	WT_RET(__wt_epoch(session, &ts));
 	tm = localtime_r(&ts.tv_sec, &_tm);
 
 	/* Create the logging path name for this time of day. */
@@ -445,9 +446,12 @@ __statlog_log_one(WT_SESSION_IMPL *session, WT_ITEM *path, WT_ITEM *tmp)
 	 * Lock the schema and walk the list of open handles, dumping
 	 * any that match the list of object sources.
 	 */
-	if (conn->stat_sources != NULL)
-		WT_RET(__wt_conn_btree_apply(
+	if (conn->stat_sources != NULL) {
+		WT_WITH_HANDLE_LIST_LOCK(session,
+		    ret = __wt_conn_btree_apply(
 		    session, NULL, __statlog_apply, NULL, NULL));
+		WT_RET(ret);
+	}
 
 	/*
 	 * Walk the list of open LSM trees, dumping any that match the
@@ -465,12 +469,12 @@ __statlog_log_one(WT_SESSION_IMPL *session, WT_ITEM *path, WT_ITEM *tmp)
 }
 
 /*
- * __statlog_on_close --
- *	Log a set of statistics at close. Requires the server is not currently
- * running.
+ * __wt_statlog_log_one --
+ *	Log a set of statistics into the configured statistics log. Requires
+ *	that the server is not currently running.
  */
-static int
-__statlog_on_close(WT_SESSION_IMPL *session)
+int
+__wt_statlog_log_one(WT_SESSION_IMPL *session)
 {
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
@@ -478,10 +482,11 @@ __statlog_on_close(WT_SESSION_IMPL *session)
 
 	conn = S2C(session);
 
-	if (!FLD_ISSET(conn->stat_flags, WT_STAT_ON_CLOSE))
+	if (!FLD_ISSET(conn->stat_flags, WT_CONN_STAT_ON_CLOSE))
 		return (0);
 
-	if (F_ISSET(conn, WT_CONN_SERVER_STATISTICS))
+	if (F_ISSET(conn, WT_CONN_SERVER_RUN) &&
+	    F_ISSET(conn, WT_CONN_SERVER_STATISTICS))
 		WT_RET_MSG(session, EINVAL,
 		    "Attempt to log statistics while a server is running");
 
@@ -490,16 +495,6 @@ __statlog_on_close(WT_SESSION_IMPL *session)
 
 err:	__wt_scr_free(session, &tmp);
 	return (ret);
-}
-
-/*
- * __statlog_server_run_chk --
- *	Check to decide if the statistics log server should continue running.
- */
-static bool
-__statlog_server_run_chk(WT_SESSION_IMPL *session)
-{
-	return (F_ISSET(S2C(session), WT_CONN_SERVER_STATISTICS));
 }
 
 /*
@@ -530,16 +525,13 @@ __statlog_server(void *arg)
 	WT_ERR(__wt_buf_init(session, &path, strlen(conn->stat_path) + 128));
 	WT_ERR(__wt_buf_init(session, &tmp, strlen(conn->stat_path) + 128));
 
-	for (;;) {
+	while (F_ISSET(conn, WT_CONN_SERVER_RUN) &&
+	    F_ISSET(conn, WT_CONN_SERVER_STATISTICS)) {
 		/* Wait until the next event. */
-		__wt_cond_wait(session, conn->stat_cond,
-		    conn->stat_usecs, __statlog_server_run_chk);
+		WT_ERR(
+		    __wt_cond_wait(session, conn->stat_cond, conn->stat_usecs));
 
-		/* Check if we're quitting or being reconfigured. */
-		if (!__statlog_server_run_chk(session))
-			break;
-
-		if (WT_STAT_ENABLED(session))
+		if (!FLD_ISSET(conn->stat_flags, WT_CONN_STAT_NONE))
 			WT_ERR(__statlog_log_one(session, &path, &tmp));
 	}
 
@@ -572,7 +564,7 @@ __statlog_start(WT_CONNECTION_IMPL *conn)
 	session = conn->stat_session;
 
 	WT_RET(__wt_cond_alloc(
-	    session, "statistics log server", &conn->stat_cond));
+	    session, "statistics log server", false, &conn->stat_cond));
 
 	/*
 	 * Start the thread.
@@ -644,7 +636,7 @@ __wt_statlog_destroy(WT_SESSION_IMPL *session, bool is_close)
 	/* Stop the server thread. */
 	F_CLR(conn, WT_CONN_SERVER_STATISTICS);
 	if (conn->stat_tid_set) {
-		__wt_cond_signal(session, conn->stat_cond);
+		WT_TRET(__wt_cond_signal(session, conn->stat_cond));
 		WT_TRET(__wt_thread_join(session, conn->stat_tid));
 		conn->stat_tid_set = false;
 	}
@@ -652,7 +644,7 @@ __wt_statlog_destroy(WT_SESSION_IMPL *session, bool is_close)
 
 	/* Log a set of statistics on shutdown if configured. */
 	if (is_close)
-		WT_TRET(__statlog_on_close(session));
+		WT_TRET(__wt_statlog_log_one(session));
 
 	/* Discard all configuration information. */
 	WT_TRET(__stat_config_discard(session));
