@@ -1,5 +1,5 @@
 {
-    "commit": "af735d14a603a6ef6256a6685f09ec13755a5024", 
+    "commit": "5b6e7961c8458be5b14eacabceb6a413d32996e3", 
     "github": "wiredtiger/wiredtiger.git", 
-    "branch": "mongodb-3.6"
+    "branch": "wt-3250-spinlock-init-consistency"
 }
